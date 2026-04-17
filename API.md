@@ -6,7 +6,7 @@ Base URL (default): `http://localhost:5100`
 
 ## `POST /v1/audio/speech`
 
-Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **multipart/form-data** (required when using adhoc voice cloning via `speaker_wav`).
+Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **multipart/form-data** (required when using adhoc voice cloning via `custom_voice_file`).
 
 ### Common fields
 
@@ -24,7 +24,8 @@ Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **m
 
 | Field | Type | Notes |
 |---|---|---|
-| `speaker_wav` | file | Optional. When present, the voice is cloned from this audio file for this single request (adhoc path, Model C in the design doc). Cache is bypassed. |
+| `custom_voice_file` | file | **Canonical** name for the adhoc voice-cloning upload. When present, the voice is cloned from this audio file for this single request — the server does **not** persist the sample or any derived latents. Cache is bypassed. Accepts any libsndfile-readable format (wav, flac, mp3, ogg, m4a, …). |
+| `speaker_wav` | file | Legacy alias of `custom_voice_file`, kept for v1.0.0 compatibility and for clients coming from the Coqui ecosystem. Identical semantics. If both fields are present on the same request, `custom_voice_file` wins. |
 
 ### Example — JSON body
 
@@ -35,15 +36,19 @@ curl -X POST http://localhost:5100/v1/audio/speech \
   -o hello.mp3
 ```
 
-### Example — adhoc voice cloning
+### Example — adhoc voice cloning (stateless)
+
+The upload is consumed in-request and never persisted on the server:
 
 ```bash
 curl -X POST http://localhost:5100/v1/audio/speech \
   -F "input=Hola mundo" \
-  -F "speaker_wav=@my_voice.wav" \
+  -F "custom_voice_file=@my_voice.wav" \
   -F "response_format=wav" \
   -o hello.wav
 ```
+
+`-F "speaker_wav=@my_voice.wav"` works identically (alias).
 
 ### Response headers
 
@@ -98,7 +103,7 @@ The server's audio cache speeds up repeated requests by storing a synthesised fi
 **Notes**
 
 - The opt-out is per-request; the operator's `CACHE_TTL_MINUTES` default is not affected.
-- Adhoc voice-cloning requests (with `speaker_wav`) are implicitly opt-out regardless of the `cache` field — these always return `X-Cache: ADHOC`.
+- Adhoc voice-cloning requests (with `custom_voice_file` or `speaker_wav`) are implicitly opt-out regardless of the `cache` field — these always return `X-Cache: ADHOC`.
 - The opt-out does not control upstream logging of the request (if you run the server behind a reverse proxy or have request-body logging enabled in your own app, those still apply). This server itself logs only the standard uvicorn access line — method, path, status, response time — no request-body content is logged.
 
 ## `POST /v1/audio/speech/stream`
