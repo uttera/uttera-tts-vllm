@@ -11,9 +11,13 @@ High-throughput **Text-to-Speech** server built on
 continuous-batching engine. VoxCPM2 today, OpenAI-compatible API,
 adhoc voice cloning on day one.
 
-> **Status**: v0.1.0 — pre-alpha. API surface expected to stabilise at
-> v1.0.0. See [CHANGELOG.md](CHANGELOG.md) for what has landed and
-> [ROADMAP.md](ROADMAP.md) for what is in flight.
+> **Status**: v1.0.0 — first stable release. Validated end-to-end on
+> NVIDIA RTX 5090 (Blackwell, 32 GB) against the 40-prompt Spanish
+> corpus: 1024/1024 OK at every burst profile, 600/600 OK under
+> 5-minute sustained load, aggregate throughput plateaus near 4.3 rps
+> (see [`uttera-benchmarks` Run 6](https://github.com/uttera/uttera-benchmarks/tree/master/results/2026-04-17-run6-vllm-tts40w)).
+> API surface is now frozen behind semver — see [CHANGELOG.md](CHANGELOG.md)
+> for the full list and [ROADMAP.md](ROADMAP.md) for v1.x plans.
 
 ## Positioning
 
@@ -38,7 +42,8 @@ adhoc voice cloning on day one.
 - **You have 8–24 GB of VRAM.**
 
 See [`uttera-benchmarks`](https://github.com/uttera/uttera-benchmarks)
-for the canonical head-to-head numbers once the TTS benches land there.
+for the canonical head-to-head numbers against `uttera-tts-hotcold`
+(Coqui XTTS-v2 and VoxCPM2 backends) on the same corpus and GPU.
 
 ## Architecture
 
@@ -52,7 +57,7 @@ A **single Python process** hosts:
   the MD5 audio cache, voice registry, and Redis self-registration
   protocol shared with the other Uttera repos.
 
-**What is here in v0.1.0**:
+**What is here in v1.0.0**:
 - 6 standard OpenAI reference voices (alloy/echo/fable/onyx/nova/shimmer)
   precomputed at startup.
 - Elite/custom voices via file-based registry (`voices.json` +
@@ -66,8 +71,9 @@ A **single Python process** hosts:
 
 **What is *not* here** (yet — see [ROADMAP.md](ROADMAP.md)):
 - Dynamic voice registry (POST/DELETE `/v1/voices`) — scheduled for
-  v0.2.
-- Benchmark suite in `tests/`.
+  a future v1.x minor.
+- In-repo benchmark harness in `tests/`. The canonical numbers live in
+  [`uttera-benchmarks`](https://github.com/uttera/uttera-benchmarks).
 
 See [API.md](API.md) for endpoint details, [HISTORY.md](HISTORY.md) for
 why there are two TTS repos.
