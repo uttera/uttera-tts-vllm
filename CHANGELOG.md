@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-17
+
+### Fixed
+- `setup.sh` failed during `pip install -r requirements.txt` because
+  `flash-attn` (a transitive dep of `nano-vllm-voxcpm`) requires
+  `torch` at build time, but pip's default PEP 517 build-isolation
+  sandbox does not have it. `setup.sh` now pre-installs torch and
+  torchaudio, then runs `pip install --no-build-isolation -r
+  requirements.txt` so flash-attn picks up the torch in the venv.
+  `requirements.txt` drops the torch pins (they live in the
+  pre-install step).
+
+v0.1.0 never made it past the first install on a clean machine; this
+is the first release that actually installs end-to-end.
+
 ## [0.1.0] - 2026-04-17
 
 First scaffold release. Pre-alpha — active development. API surface may

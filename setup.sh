@@ -21,10 +21,18 @@ $PYTHON_BIN -m venv venv
 source venv/bin/activate
 
 echo "[*] Installing build-time dependencies..."
-pip install --upgrade pip setuptools wheel
+pip install --upgrade pip setuptools wheel packaging
+
+# flash-attn is a transitive dependency of nano-vllm-voxcpm. Its build
+# system requires torch to be importable in the build environment, but
+# pip's default PEP 517 build isolation provides an empty env. So we
+# install torch first, then the rest with --no-build-isolation so flash-attn
+# picks up torch from the venv.
+echo "[*] Pre-installing torch (required before flash-attn can build)..."
+pip install "torch>=2.5.0,<2.10.0" "torchaudio>=2.5.0,<2.10.0"
 
 echo "[*] Installing core dependencies from requirements.txt (may take several minutes)..."
-pip install -r requirements.txt
+pip install --no-build-isolation -r requirements.txt
 
 if [ -f "./setup_assets.sh" ]; then
     echo "[*] Python environment ready. Handing over to setup_assets.sh..."
