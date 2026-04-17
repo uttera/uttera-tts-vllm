@@ -17,6 +17,7 @@ Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **m
 | `response_format` | string | `mp3` | `mp3`, `wav`, `pcm`, `opus`, `flac`. |
 | `speed` | float | `1.0` | Included in the cache key. |
 | `cfg_value` | float | `2.0` | VoxCPM2-specific tuning knob. |
+| `cache` | bool | `null` | Per-request cache opt-out. `false` (or `0`) tells the server neither to read from nor write to the audio cache for this request — the response will be freshly synthesised and nothing about the request is persisted on disk afterwards. `true` is the explicit opt-in; `null`/omitted follows the server default (cache on whenever `CACHE_TTL_MINUTES > 0`). See **Cache opt-out** below. |
 | `model` | string | `tts-1` | Ignored; the model is fixed by `VOXCPM_MODEL` at startup. |
 
 ### Multipart-only fields
@@ -49,6 +50,56 @@ curl -X POST http://localhost:5100/v1/audio/speech \
 - `X-Route: HOT` — synthesised by the engine now.
 - `X-Route: ADHOC` — synthesised by the engine now, cache was bypassed because the request used adhoc cloning.
 - `X-Route: CACHE` — served from the on-disk audio cache.
+
+- `X-Cache: HIT` — the bytes came from the on-disk cache (no synthesis ran).
+- `X-Cache: MISS` — cache is enabled, but this entry had to be synthesised.
+- `X-Cache: BYPASS` — the client asked us to skip the cache for this request.
+- `X-Cache: ADHOC` — adhoc voice-cloning request, cache was never eligible.
+- `X-Cache: DISABLED` — the operator has disabled the cache globally (`CACHE_TTL_MINUTES <= 0`).
+
+### Cache opt-out — per-request privacy control
+
+The server's audio cache speeds up repeated requests by storing a synthesised file on disk keyed by `MD5(model | voice | speed | format | params | text)`. For some workloads — sensitive text, medical or legal dictation, one-off personal messages — a client may want a guarantee that the server writes **nothing** to disk about the request. The cache opt-out provides that:
+
+**Effect when opt-out is requested**
+
+- The cache read path is skipped (no HIT is served and none is looked for).
+- The cache write path is skipped (no file lands in `AUDIO_CACHE_DIR`).
+- The synthesised audio is returned directly from a temp file that is unlinked as soon as the HTTP response is flushed.
+- The response carries `X-Cache: BYPASS` so the client can verify the decision.
+
+**Three equivalent ways to request it** (use whichever fits the client):
+
+1. **JSON body** — OpenAI-style extension:
+   ```bash
+   curl -X POST http://localhost:5100/v1/audio/speech \
+     -H 'Content-Type: application/json' \
+     -d '{"input":"Notas privadas del paciente","voice":"alloy","cache":false}' \
+     -o out.mp3
+   ```
+
+2. **Multipart form** — same contract, accepts any of `0`, `false`, `no`, `off`:
+   ```bash
+   curl -X POST http://localhost:5100/v1/audio/speech \
+     -F input='Notas privadas del paciente' \
+     -F voice=alloy -F cache=false -o out.mp3
+   ```
+
+3. **HTTP header** — standard `Cache-Control` semantics (works from any HTTP client without touching the body):
+   ```bash
+   curl -X POST http://localhost:5100/v1/audio/speech \
+     -H 'Cache-Control: no-cache' -H 'Content-Type: application/json' \
+     -d '{"input":"Notas privadas del paciente","voice":"alloy"}' \
+     -o out.mp3
+   ```
+
+`Cache-Control: no-store` is accepted equivalently.
+
+**Notes**
+
+- The opt-out is per-request; the operator's `CACHE_TTL_MINUTES` default is not affected.
+- Adhoc voice-cloning requests (with `speaker_wav`) are implicitly opt-out regardless of the `cache` field — these always return `X-Cache: ADHOC`.
+- The opt-out does not control upstream logging of the request (if you run the server behind a reverse proxy or have request-body logging enabled in your own app, those still apply). This server itself logs only the standard uvicorn access line — method, path, status, response time — no request-body content is logged.
 
 ## `POST /v1/audio/speech/stream`
 
