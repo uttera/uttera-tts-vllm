@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.0.0
+# Version: 1.1.0
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,14 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.1.0 (2026-04-17): Adhoc voice-cloning field renamed (additively)
+#   to `custom_voice_file` — symmetric with uttera-tts-hotcold v2.1.0
+#   so the same client code works against either backend. The v1.0.0
+#   `speaker_wav` name is accepted as an alias for backward compat;
+#   if both fields are present on the same request, `custom_voice_file`
+#   wins. New name is format-agnostic (the server still accepts wav /
+#   mp3 / flac / any libsndfile-readable format regardless of field
+#   name). Docstring on `/v1/audio/speech` updated.
 # - 1.0.0 (2026-04-17): First public stable release. Validated end-to-end
 #   on RTX 5090 / Blackwell against the 40-prompt Spanish corpus (see
 #   uttera/uttera-benchmarks Run 6): 1024/1024 at every burst size, no
@@ -122,7 +130,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
 logging.basicConfig(
@@ -526,15 +534,15 @@ class SpeechRequest(BaseModel):
 # -------------------------------
 
 @app.post("/v1/audio/speech")
-async def create_speech(
-    request: Request,
-    file: Optional[UploadFile] = File(None, alias="speaker_wav"),
-):
+async def create_speech(request: Request):
     """OpenAI-compatible speech synthesis.
 
-    Accepts either a JSON body (OpenAI style) or multipart/form-data (to
-    allow adhoc voice cloning via the `speaker_wav` file field, which has
-    no JSON analogue). The JSON fields are the same in both cases.
+    Accepts either a JSON body (OpenAI style) or multipart/form-data. The
+    multipart form is required for **stateless adhoc voice cloning**: the
+    caller uploads a reference audio file and the server clones the voice
+    for that single request without persisting anything. The canonical
+    field name is `custom_voice_file`; `speaker_wav` is accepted as a
+    backward-compatible alias for v1.0.0 clients.
     """
     global _in_flight, _total_errors, _total_completed
     if not _engine_ready:
@@ -561,7 +569,10 @@ async def create_speech(
             cfg_value=float(form.get("cfg_value") or 2.0),
             cache=_cache_field,
         )
-        spec = form.get("speaker_wav")
+        # Canonical field name is `custom_voice_file`. `speaker_wav` kept as
+        # alias for v1.0.0 / Coqui-style clients. If both are sent, the
+        # canonical one wins.
+        spec = form.get("custom_voice_file") or form.get("speaker_wav")
         if isinstance(spec, UploadFile):
             speaker_wav = spec
 

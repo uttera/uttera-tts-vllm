@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-04-17
+
+### Added
+- **Canonical adhoc-cloning field renamed to `custom_voice_file`**,
+  symmetric with `uttera-tts-hotcold` v2.1.0. The same client code —
+  `curl -F custom_voice_file=@sample.wav ...` — now works against
+  either backend. The v1.0.0 name `speaker_wav` is still accepted as
+  an alias (this is a v1.x additive change, not a breaking rename);
+  if both field names are present on the same request, the canonical
+  `custom_voice_file` wins.
+
+### Clarified
+- The field is format-agnostic. Any libsndfile-readable file (wav,
+  flac, mp3, ogg, m4a) works — the old `speaker_wav` name was a
+  misleading Coqui carry-over.
+
 ## [1.0.0] - 2026-04-17
 
 First public stable release. `uttera-tts-vllm` graduates from pre-alpha
