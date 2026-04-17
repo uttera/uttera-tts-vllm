@@ -67,7 +67,9 @@ A **single Python process** hosts:
   have.
 - MP3 / WAV / PCM / Opus / FLAC response formats.
 - Chunked streaming via `/v1/audio/speech/stream`.
-- On-disk MD5 audio cache identical to `uttera-tts-hotcold`.
+- On-disk MD5 audio cache identical to `uttera-tts-hotcold`, with
+  per-request opt-out for privacy-sensitive calls (see
+  [**Cache opt-out**](#cache-opt-out--per-request-privacy-control)).
 
 **What is *not* here** (yet — see [ROADMAP.md](ROADMAP.md)):
 - Dynamic voice registry (POST/DELETE `/v1/voices`) — scheduled for
@@ -105,6 +107,34 @@ curl -X POST http://localhost:5100/v1/audio/speech \
   -F "speaker_wav=@my_voice.wav" \
   -o hello.wav
 ```
+
+## Cache opt-out — per-request privacy control
+
+By default the server caches synthesised audio on disk to accelerate repeated requests, keyed by `MD5(model | voice | speed | format | params | text)`. For **privacy-sensitive workloads** (medical/legal dictation, personal messages, one-off text a user does not want persisted on the server), a client can opt the single request out of both the read and the write paths of the cache. The synthesised audio still reaches the caller, but the server writes nothing to disk about that specific request.
+
+Three equivalent ways to request it — use whichever the client finds most natural:
+
+```bash
+# (1) JSON body field — OpenAI-style extension
+curl -X POST http://localhost:5100/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"Notas privadas","voice":"alloy","cache":false}' \
+  -o out.mp3
+
+# (2) Multipart form field — accepts 0 / false / no / off
+curl -X POST http://localhost:5100/v1/audio/speech \
+  -F input='Notas privadas' -F voice=alloy -F cache=false -o out.mp3
+
+# (3) Standard HTTP header — no body changes needed
+curl -X POST http://localhost:5100/v1/audio/speech \
+  -H 'Cache-Control: no-cache' -H 'Content-Type: application/json' \
+  -d '{"input":"Notas privadas","voice":"alloy"}' \
+  -o out.mp3
+```
+
+Every response carries an `X-Cache` header so the client can verify the decision — `HIT`, `MISS`, `BYPASS`, `ADHOC`, or `DISABLED`. Full reference, including the exact semantics of each `X-Cache` value and a note on what the opt-out does **not** cover (upstream logging outside this server), lives in [API.md](API.md#cache-opt-out--per-request-privacy-control).
+
+The opt-out is per-request; the operator's `CACHE_TTL_MINUTES` default (see [Configuration](#configuration)) is unaffected.
 
 ## Configuration
 
