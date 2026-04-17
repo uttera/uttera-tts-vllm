@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, "experimental/*"]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: pip install ruff
+      - name: Lint Python
+        run: |
+          ruff check main_tts.py --select E,F,W --ignore E501
+
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate requirements file
+        run: |
+          test -f requirements.txt || { echo "MISSING: requirements.txt"; exit 1; }
+          python -c "
+          with open('requirements.txt') as fh:
+              for line in fh:
+                  line = line.strip()
+                  if line and not line.startswith('#') and not line.startswith('-r'):
+                      print(f'  {line}')
+          "
+          echo "requirements.txt OK."
+      - name: Validate server module syntax
+        run: |
+          python -m py_compile main_tts.py
+          echo "main_tts.py parses cleanly."
+      - name: Validate voices.json
+        run: |
+          test -f voices.json || { echo "MISSING: voices.json"; exit 1; }
+          python -c "
+          import json
+          v = json.load(open('voices.json'))
+          assert isinstance(v, dict) and v, 'voices.json must be a non-empty object'
+          for name, path in v.items():
+              assert isinstance(name, str) and name, 'voice name must be non-empty string'
+              assert isinstance(path, str) and path.endswith('.wav'), f'voice {name!r}: path must be a .wav relative to VOICE_ASSET_DIR'
+          print(f'voices.json OK: {len(v)} voices declared.')
+          "
+      - name: Validate endpoint declarations
+        run: |
+          python -c "
+          src = open('main_tts.py').read()
+          required_routes = [
+              '/v1/audio/speech',
+              '/v1/audio/speech/stream',
+              '/v1/voices',
+              '/admin/reload-voices',
+              '/v1/models',
+              '/health',
+          ]
+          for r in required_routes:
+              assert r in src, f'Route missing from main_tts.py: {r}'
+              print(f'Route OK: {r}')
+          "
+
+  smoke-voxcpm:
+    runs-on: [self-hosted, gpu]
+    if: false  # Enable when a self-hosted GPU runner is configured
+    needs: [lint, structure]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup venv + install
+        run: |
+          python3.12 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Start server
+        run: |
+          source venv/bin/activate
+          VOXCPM_MODEL=openbmb/VoxCPM2 \
+          VLLM_GPU_MEM_UTIL=0.5 \
+            uvicorn main_tts:app --host 127.0.0.1 --port 5100 &
+          for i in $(seq 1 120); do
+            sleep 3
+            curl -sf http://127.0.0.1:5100/health | grep -q '"engine_ready":true' && break
+          done
+      - name: Health check
+        run: |
+          HEALTH=$(curl -s http://127.0.0.1:5100/health)
+          echo "$HEALTH" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          assert d['status'] == 'ok', f'Health not ok: {d}'
+          assert d.get('engine') == 'nano-vllm-voxcpm', f'Wrong engine: {d}'
+          assert d['engine_ready'], 'Engine not ready'
+          assert d['voices_loaded'], 'No voices loaded'
+          print('Health check passed.')
+          "
+      - name: Synthesis smoke test
+        run: |
+          curl -s -X POST http://127.0.0.1:5100/v1/audio/speech \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"tts-1","voice":"alloy","input":"Smoke test."}' \
+            -o /tmp/smoke.mp3 -w "HTTP=%{http_code}\n"
+          file /tmp/smoke.mp3 | grep -q "Audio" || { echo "Not a valid audio file"; exit 1; }
+          echo "Synthesis smoke test passed."

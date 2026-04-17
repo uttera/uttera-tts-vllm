@@ -1,0 +1,8 @@
+{
+  "alloy":   "standard/alloy.wav",
+  "echo":    "standard/echo.wav",
+  "fable":   "standard/fable.wav",
+  "onyx":    "standard/onyx.wav",
+  "nova":    "standard/nova.wav",
+  "shimmer": "standard/shimmer.wav"
+}
