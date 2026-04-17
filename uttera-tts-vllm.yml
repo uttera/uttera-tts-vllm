@@ -1,0 +1,26 @@
+# systemd unit: Uttera TTS vLLM Server
+#
+# Install:
+#   sudo cp uttera-tts-vllm.yml /etc/systemd/system/uttera-tts-vllm.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now uttera-tts-vllm
+
+[Unit]
+Description=Uttera TTS vLLM Server (VoxCPM2, continuous batching)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uttera
+Group=uttera
+WorkingDirectory=/opt/uttera-tts-vllm
+EnvironmentFile=-/opt/uttera-tts-vllm/.env
+ExecStart=/opt/uttera-tts-vllm/venv/bin/uvicorn main_tts:app --host 0.0.0.0 --port 5100
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
