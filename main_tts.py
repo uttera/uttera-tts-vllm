@@ -19,6 +19,19 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 0.1.4 (2026-04-17): JSON-body cache opt-out. `{"cache": false}` in the
+#   request body (or `cache=0/false/no/off` in multipart) skips read +
+#   write of the audio cache for that single request. Symmetric with the
+#   existing Cache-Control header path and with uttera-tts-hotcold v2.0.3.
+# - 0.1.3 (2026-04-17): Per-request cache bypass via the HTTP
+#   `Cache-Control: no-cache` header + response header
+#   `X-Cache: HIT | MISS | BYPASS | ADHOC | DISABLED` so the cache
+#   decision is observable without timing heuristics.
+# - 0.1.2 (2026-04-17): setup.sh pre-installs psutil + ninja on top of
+#   torch and packaging — flash-attn's setup.py imports all four.
+# - 0.1.1 (2026-04-17): setup.sh pre-installs torch before
+#   `pip install -r requirements.txt` and runs the main install with
+#   `--no-build-isolation`, so flash-attn (transitive dep) can build.
 # - 0.1.0 (2026-04-17): Initial scaffold. FastAPI app wrapping
 #   nanovllm_voxcpm.models.voxcpm2.server.AsyncVoxCPM2ServerPool.
 #   Endpoints: /v1/audio/speech (cached, MP3/WAV/PCM),
@@ -102,7 +115,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "0.1.3"
+SERVER_VERSION = "0.1.4"
 
 DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
 logging.basicConfig(
@@ -494,6 +507,11 @@ class SpeechRequest(BaseModel):
     speed: float = 1.0
     # VoxCPM-specific (accepted, passed through).
     cfg_value: float = 2.0
+    # Opt out of the server-side audio cache for this specific request. When
+    # False the server neither reads nor writes the MD5-keyed audio cache;
+    # the response carries `X-Cache: BYPASS`. Omit (None) to fall back to
+    # the server default (driven by `CACHE_TTL_MINUTES`).
+    cache: Optional[bool] = None
 
 
 # -------------------------------
@@ -523,6 +541,10 @@ async def create_speech(
     else:
         # multipart or urlencoded
         form = await request.form()
+        _raw_cache = form.get("cache")
+        _cache_field: Optional[bool] = None
+        if _raw_cache is not None:
+            _cache_field = str(_raw_cache).strip().lower() not in ("0", "false", "no", "off")
         req = SpeechRequest(
             model=form.get("model") or SERVED_MODEL_NAME,
             voice=form.get("voice"),
@@ -530,6 +552,7 @@ async def create_speech(
             response_format=form.get("response_format") or "mp3",
             speed=float(form.get("speed") or 1.0),
             cfg_value=float(form.get("cfg_value") or 2.0),
+            cache=_cache_field,
         )
         spec = form.get("speaker_wav")
         if isinstance(spec, UploadFile):
@@ -549,10 +572,13 @@ async def create_speech(
     voice_name = (req.voice or DEFAULT_VOICE).lower() if speaker_wav is None else "adhoc"
     adhoc = speaker_wav is not None
 
-    # Cache check (skip for adhoc, or when client sends `Cache-Control: no-cache`
-    # / `no-store` to opt out of caching on a per-request basis).
+    # Cache opt-out for this specific request. Two equivalent mechanisms:
+    #   1. `{"cache": false}` (or 0) in the JSON body — first-class API field.
+    #   2. `Cache-Control: no-cache` / `no-store` request header — standard HTTP.
+    # Either one turns off both the read and the write side of the cache for
+    # this single request, without affecting `CACHE_TTL_MINUTES`.
     cc = (request.headers.get("Cache-Control") or "").lower()
-    bypass_cache = any(tok in cc for tok in ("no-cache", "no-store"))
+    bypass_cache = (req.cache is False) or any(tok in cc for tok in ("no-cache", "no-store"))
     cache_file: Optional[Path] = None
     if not adhoc and CACHE_TTL_MINUTES > 0 and not bypass_cache:
         key = _cache_key(req.input, voice_name, req.speed, fmt, params)
