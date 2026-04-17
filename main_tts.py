@@ -102,7 +102,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.1.3"
 
 DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
 logging.basicConfig(
@@ -549,9 +549,12 @@ async def create_speech(
     voice_name = (req.voice or DEFAULT_VOICE).lower() if speaker_wav is None else "adhoc"
     adhoc = speaker_wav is not None
 
-    # Cache check (skip for adhoc).
+    # Cache check (skip for adhoc, or when client sends `Cache-Control: no-cache`
+    # / `no-store` to opt out of caching on a per-request basis).
+    cc = (request.headers.get("Cache-Control") or "").lower()
+    bypass_cache = any(tok in cc for tok in ("no-cache", "no-store"))
     cache_file: Optional[Path] = None
-    if not adhoc and CACHE_TTL_MINUTES > 0:
+    if not adhoc and CACHE_TTL_MINUTES > 0 and not bypass_cache:
         key = _cache_key(req.input, voice_name, req.speed, fmt, params)
         cache_file = _cache_path(key, fmt)
         if _cache_hit(cache_file):
@@ -559,7 +562,7 @@ async def create_speech(
             return FileResponse(
                 cache_file,
                 media_type=f"audio/{fmt}",
-                headers={"X-Route": "CACHE"},
+                headers={"X-Route": "CACHE", "X-Cache": "HIT"},
             )
 
     latents, _ = await _latents_for_request(req.voice, speaker_wav)
@@ -589,10 +592,18 @@ async def create_speech(
             log.warning(f"Failed to write cache {cache_file.name}: {e}")
 
     _total_completed += 1
+    if bypass_cache:
+        x_cache = "BYPASS"
+    elif adhoc:
+        x_cache = "ADHOC"
+    elif CACHE_TTL_MINUTES <= 0:
+        x_cache = "DISABLED"
+    else:
+        x_cache = "MISS"
     return Response(
         content=encoded,
         media_type=f"audio/{fmt}",
-        headers={"X-Route": "ADHOC" if adhoc else "HOT"},
+        headers={"X-Route": "ADHOC" if adhoc else "HOT", "X-Cache": x_cache},
     )
 
 
