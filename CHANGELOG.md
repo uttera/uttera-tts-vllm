@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-04-17
+
+First public stable release. `uttera-tts-vllm` graduates from pre-alpha
+after end-to-end validation on NVIDIA RTX 5090 (Blackwell, 32 GB)
+against the 40-prompt Spanish corpus in
+[`uttera-benchmarks` Run 6](https://github.com/uttera/uttera-benchmarks/tree/master/results/2026-04-17-run6-vllm-tts40w):
+
+  latency    20/20    p50  1.8 s  /  p95   2.5 s
+  burst@8     8/8     p50  3.3 s
+  burst@64   64/64    p50 11.7 s
+  burst@256 256/256   p50 33.9 s
+  burst@512 512/512   p50 64.2 s
+  burst@1024 1024/1024 p50 123 s     ← zero failures at every N
+  sustained  600/600  p50  3.3 s / p95  4.0 s   (2 rps × 5 min)
+
+Throughput saturates near 4.3 rps from N = 256 upwards; sustained at
+50 % of burst@64 capacity stays flat with no drift over the window.
+
+### API surface — now stable (semver)
+- `POST /v1/audio/speech` — OpenAI-compatible JSON body or multipart
+  form. Supports adhoc voice cloning via `speaker_wav` file field.
+- `POST /v1/audio/speech/stream` — chunked `audio/wav` streaming.
+  Starts emitting PCM as soon as the engine produces it; no caching.
+- `GET /v1/voices`, `POST /admin/reload-voices`, `GET /v1/models`,
+  `GET /health`.
+- Audio cache keyed by MD5 of `(model, voice, speed, format, params,
+  text)`. Client opt-out per-request via `{"cache": false}` body or
+  `Cache-Control: no-cache` header. Every response carries
+  `X-Cache: HIT | MISS | BYPASS | ADHOC | DISABLED`.
+- `X-Route: CACHE | HOT | ADHOC` on non-cache responses.
+
+### Engine tuning (env vars, unchanged since 0.1.x)
+- `VLLM_GPU_MEM_UTIL` (default 0.85)
+- `VLLM_MAX_NUM_SEQS` (default 64)
+- `VLLM_MAX_NUM_BATCHED_TOKENS`, `VLLM_MAX_MODEL_LEN`,
+  `VOXCPM_INFERENCE_TIMESTEPS`
+
+### Post-1.0 compatibility contract
+- The endpoint paths, request/response schemas, env var names and
+  their defaults, and the `X-Cache` / `X-Route` header values are
+  frozen — any breaking change to these requires a v2.0.0.
+- Additive extensions (new optional body fields, new
+  `X-Cache`/`X-Route` values) are v1.x minor releases.
+- Bug fixes are v1.0.x patch releases.
+
 ## [0.1.4] - 2026-04-17
 
 ### Added

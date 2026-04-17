@@ -3,7 +3,7 @@ version: "3.8"
 services:
   uttera-tts-vllm:
     build: .
-    image: uttera-tts-vllm:0.1.0
+    image: uttera-tts-vllm:1.0.0
     container_name: uttera-tts-vllm
     restart: unless-stopped
     ports:

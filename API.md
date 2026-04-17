@@ -105,7 +105,7 @@ Use this after editing `voices.json` or dropping a new `.wav` into `assets/voice
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "engine": "nano-vllm-voxcpm",
   "model": "openbmb/VoxCPM2",
   "served_as": "tts-1",

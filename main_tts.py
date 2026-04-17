@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 0.1.0
+# Version: 1.0.0
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,13 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.0.0 (2026-04-17): First public stable release. Validated end-to-end
+#   on RTX 5090 / Blackwell against the 40-prompt Spanish corpus (see
+#   uttera/uttera-benchmarks Run 6): 1024/1024 at every burst size, no
+#   failures under sustained 2 rps for 5 minutes, aggregate throughput
+#   plateaus near 4.3 rps. API surface frozen behind semver — the cache
+#   opt-out (body `{"cache": false}` and header `Cache-Control: no-cache`)
+#   plus the `X-Cache` response header are now stable.
 # - 0.1.4 (2026-04-17): JSON-body cache opt-out. `{"cache": false}` in the
 #   request body (or `cache=0/false/no/off` in multipart) skips read +
 #   write of the audio cache for that single request. Symmetric with the
@@ -44,7 +51,7 @@
 #   uttera-tts-hotcold. Redis self-registration carried over from
 #   the sibling repos.
 #
-# --- Architecture Summary (v0.1.0) ---
+# --- Architecture Summary (v1.0.0) ---
 #
 # * SINGLE-PROCESS ENGINE
 #   nanovllm_voxcpm's AsyncVoxCPM2ServerPool is instantiated at startup
@@ -115,7 +122,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "0.1.4"
+SERVER_VERSION = "1.0.0"
 
 DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
 logging.basicConfig(
@@ -635,7 +642,7 @@ async def create_speech(
 
 @app.post("/v1/audio/speech/stream")
 async def create_speech_stream(request: Request):
-    """Streaming TTS. Returns audio/wav chunked. No cache. No adhoc cloning in v0.1.0."""
+    """Streaming TTS. Returns audio/wav chunked. No cache. No adhoc cloning on this endpoint."""
     global _in_flight, _total_errors, _total_completed
     if not _engine_ready or _pool is None:
         raise HTTPException(status_code=503, detail="Engine not ready")
