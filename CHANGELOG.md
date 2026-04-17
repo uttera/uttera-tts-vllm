@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-04-17
+
+### Fixed
+- `setup.sh` pre-install list was still incomplete. `flash-attn`'s
+  `setup.py` imports `torch`, `packaging`, `psutil`, and `ninja`;
+  v0.1.1 covered only torch and packaging, so the build died on
+  `ModuleNotFoundError: No module named 'psutil'`. Added `psutil` and
+  `ninja` to the pre-install list.
+
 ## [0.1.1] - 2026-04-17
 
 ### Fixed
@@ -17,8 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `requirements.txt` drops the torch pins (they live in the
   pre-install step).
 
-v0.1.0 never made it past the first install on a clean machine; this
-is the first release that actually installs end-to-end.
+v0.1.0 never made it past the first install on a clean machine.
 
 ## [0.1.0] - 2026-04-17
 
