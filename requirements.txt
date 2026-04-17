@@ -1,10 +1,12 @@
 # nano-vllm-voxcpm pulls in its own torch/vLLM/kernel stack. Pin to a
 # tested commit/version once the project publishes one; for now we
 # depend on the PyPI release.
+#
+# IMPORTANT: torch and torchaudio must already be installed before this
+# file is processed, because nano-vllm-voxcpm -> flash-attn needs torch
+# at build time. See setup.sh for the two-step install that handles it.
 nano-vllm-voxcpm>=2.0.0
 huggingface-hub>=0.20.0
-torch>=2.5.0
-torchaudio>=2.5.0
 
 # Audio IO + format conversion.
 soundfile>=0.12.0
