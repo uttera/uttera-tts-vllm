@@ -5,6 +5,78 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-04-18
+
+OpenAI-compatibility polish sweep. Driven by a full endpoint validation
+run against v1.1.0. Found one **CRITICAL bug** (adhoc voice cloning
+was silently broken) plus seven polish items, all fixed. Behaviour is
+backward-compatible *except* for adhoc cloning which now actually
+works — v1.1.0 clients that thought they were cloning a voice were in
+fact getting the default voice.
+
+### Fixed
+
+1. **[CRITICAL] Adhoc voice cloning was silently disabled.** The
+   `isinstance(spec, UploadFile)` check imported
+   `fastapi.datastructures.UploadFile` but Starlette's form parser
+   returns `starlette.datastructures.UploadFile` — in FastAPI 0.136+ /
+   Starlette 1.0+ these are distinct classes (they were aliases in
+   earlier versions). The `isinstance` check always returned False, so
+   `speaker_wav` never latched, the handler silently used the default
+   voice, and the request hit the regular audio cache. Responses
+   carried `X-Route: HOT` / `X-Cache: MISS|HIT` instead of the
+   documented `X-Route: ADHOC` / `X-Cache: ADHOC`. Fixed by matching
+   either class (plus a duck-type fallback for future-proofing) — see
+   `_is_upload_file()`. **Users who relied on v1.1.0 adhoc cloning:
+   upgrade to v1.2.0 to actually get cloned voices.**
+2. **Bogus `custom_voice_file` bodies** (non-audio, empty) were
+   accepted and silently produced default-voice audio — same root
+   cause as (1). Now rejected with HTTP 400 and a trimmed decode
+   error (the nano-vllm-voxcpm traceback no longer leaks to clients).
+3. **JSON body without `input`** raised a `pydantic.ValidationError`
+   that bubbled up as HTTP 500 with no body. Now caught and converted
+   to HTTP 422 with the pydantic error detail.
+4. **`speed` range validation.** Values outside `[0.25, 4.0]` (OpenAI
+   spec) were silently accepted. Now → HTTP 422 with an explicit range
+   message.
+5. **`speed` is now actually applied.** The engine doesn't support
+   variable-rate synthesis natively, so `speed != 1.0` was silently
+   ignored up to v1.1.0. `_encode_audio()` now routes through an
+   ffmpeg `atempo` filter chain (chained for values < 0.5 or > 2.0)
+   for every output format — `mp3`, `wav`, `pcm`, `opus`, `flac`.
+6. **`cfg_value` range validation.** Values outside `[0.5, 5.0]`
+   (VoxCPM2 safe range) were accepted and could produce NaN / garbage
+   from the diffusion solver. Now → HTTP 422.
+7. **`HEAD /health`** returned HTTP 405. Now accepts both GET and
+   HEAD via `@app.api_route(methods=["GET", "HEAD"])`.
+8. **No CORS middleware.** Added opt-in `CORSMiddleware` gated on
+   the `CORS_ALLOW_ORIGINS` env var (comma-separated list, or `"*"`).
+   Disabled by default — API-first deployments don't need it, and
+   enabling it unconditionally broadens the attack surface.
+
+### Changed
+
+- **`SERVER_VERSION` bumped to `1.2.0`.**
+
+### Verified
+
+- 128-concurrent regression burst: 128/128 OK, ~12 rps (same order of
+  magnitude as v1.1.0; minor variance from cold cache in the run).
+- Adhoc voice cloning via `custom_voice_file` and `speaker_wav` alias
+  both emit `X-Route: ADHOC` and generate audio in the uploaded voice.
+- `speed=2.0` produces ~half-duration audio; `speed=0.5` produces
+  ~double-duration audio (verified with `ffprobe`).
+- CORS preflight + actual POST emit the expected headers when
+  `CORS_ALLOW_ORIGINS` is set.
+
+### Breaking?
+
+- **Clients that unknowingly relied on v1.1.0's silent fallback to
+  default voice** will now receive real cloned audio from their
+  uploaded `custom_voice_file`. That is the documented contract; if
+  the upload fails decode, the server now returns HTTP 400 instead of
+  quietly using the default voice.
+
 ## [1.1.0] - 2026-04-17
 
 ### Added
