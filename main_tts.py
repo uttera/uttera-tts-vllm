@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.1.0
+# Version: 1.2.0
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,42 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.2.0 (2026-04-18): OpenAI-compat polish sweep. Eight findings
+#   uncovered by the full endpoint validation run against v1.1.0 —
+#   one CRITICAL bug plus seven polish items. All backward-compatible
+#   except the corrected adhoc-cloning path (which was silently broken):
+#
+#   1. [CRITICAL] Adhoc voice cloning was silently disabled. The
+#      `isinstance(spec, UploadFile)` check used `fastapi.UploadFile`
+#      but Starlette's form parser returns `starlette.datastructures.UploadFile`
+#      which is a DIFFERENT class in FastAPI 0.136+ / Starlette 1.0+
+#      (they were identical in older versions). The isinstance check
+#      always returned False, so `speaker_wav` never latched and every
+#      request silently fell through to the default voice — emitting
+#      `X-Route: HOT` (instead of `ADHOC`) and caching the output as a
+#      regular request. Fixed by accepting either class (or any
+#      file-like object with `read` + `filename`).
+#   2. JSON body without `input` raised `pydantic.ValidationError` that
+#      bubbled up as HTTP 500 with no body. Now caught and converted
+#      to HTTP 422 with the pydantic error detail.
+#   3. Bogus `custom_voice_file` (non-audio body) was accepted and
+#      silently produced output with the default voice — same root
+#      cause as (1). Now rejected with HTTP 400 because the UploadFile
+#      latches correctly and `encode_latents` raises a decode error.
+#   4. `speed` outside `[0.25, 4.0]` (OpenAI spec) was accepted
+#      silently. Now validated → HTTP 422.
+#   5. `speed` != 1.0 was silently ignored (the engine doesn't support
+#      rate control). Now implemented as a post-process `ffmpeg atempo`
+#      filter (chained for values < 0.5 or > 2.0), applied across all
+#      output formats including WAV + PCM.
+#   6. `cfg_value` outside `[0.5, 5.0]` (VoxCPM safe range) was
+#      accepted silently and could produce NaN / garbage. Now
+#      validated → HTTP 422.
+#   7. HEAD /health returned HTTP 405. Now accepts both GET and HEAD
+#      via `@app.api_route(methods=["GET", "HEAD"])`.
+#   8. No CORS middleware. Added opt-in `CORSMiddleware` gated on the
+#      `CORS_ALLOW_ORIGINS` env var (comma-separated list, or `"*"`).
+#      Disabled by default — API-first deployments don't need it.
 # - 1.1.0 (2026-04-17): Adhoc voice-cloning field renamed (additively)
 #   to `custom_voice_file` — symmetric with uttera-tts-hotcold v2.1.0
 #   so the same client code works against either backend. The v1.0.0
@@ -111,8 +147,10 @@ import numpy as np
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 # Load .env from the project directory or its parent
 _base = os.path.dirname(os.path.abspath(__file__))
@@ -130,7 +168,18 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
+
+# Validation ranges.
+# `speed` — OpenAI spec for /v1/audio/speech is [0.25, 4.0].
+SPEED_MIN = 0.25
+SPEED_MAX = 4.0
+# `cfg_value` — VoxCPM2 classifier-free guidance. Default 2.0. Above 5
+# the model frequently degenerates to repetition or NaNs; below 0.5 it
+# ignores the reference voice. Mirror the clamp used in the sibling
+# uttera-tts-hotcold voxcpm_backend.py.
+CFG_MIN = 0.5
+CFG_MAX = 5.0
 
 DEBUG = os.environ.get("DEBUG", "false").lower() in ("1", "true", "yes")
 logging.basicConfig(
@@ -327,26 +376,40 @@ def _streaming_wav_header(sample_rate: int = VOXCPM_SAMPLE_RATE,
     )
 
 
-def _encode_audio(pcm_bytes: bytes, fmt: str) -> bytes:
-    """Convert raw int16 PCM to the requested output format."""
-    if fmt == "pcm":
+def _encode_audio(pcm_bytes: bytes, fmt: str, speed: float = 1.0) -> bytes:
+    """Convert raw int16 PCM to the requested output format.
+
+    When `speed` != 1.0 we route through ffmpeg's `atempo` filter even
+    for PCM and WAV (which otherwise skip ffmpeg), so speed support is
+    consistent across every response_format.
+    """
+    atempo = _atempo_chain(speed)
+    if fmt == "pcm" and not atempo:
         return pcm_bytes
-    if fmt == "wav":
+    if fmt == "wav" and not atempo:
         return _wav_header(len(pcm_bytes)) + pcm_bytes
-    # ffmpeg path for mp3/opus/flac.
+
+    # ffmpeg path (all formats go through this when atempo is needed,
+    # or for any fmt that requires an encoder).
     codec_args: dict[str, list[str]] = {
         "mp3":  ["-codec:a", "libmp3lame", "-qscale:a", "2"],
         "opus": ["-codec:a", "libopus", "-b:a", "64k"],
         "flac": ["-codec:a", "flac"],
+        # For PCM + WAV with speed != 1 we re-encode raw int16 back out;
+        # ffmpeg produces identical format, just time-scaled.
+        "wav":  ["-codec:a", "pcm_s16le"],
+        "pcm":  ["-codec:a", "pcm_s16le", "-f", "s16le"],
     }
     if fmt not in codec_args:
         raise ValueError(f"Unsupported response_format: {fmt}")
+    out_format = {"mp3": "mp3", "opus": "ogg", "flac": "flac", "wav": "wav", "pcm": "s16le"}[fmt]
     cmd = [
         "ffmpeg", "-y",
         "-f", "s16le", "-ar", str(VOXCPM_SAMPLE_RATE), "-ac", "1",
         "-i", "pipe:0",
+        *atempo,
         *codec_args[fmt],
-        "-f", {"mp3": "mp3", "opus": "ogg", "flac": "flac"}[fmt],
+        "-f", out_format,
         "pipe:1",
     ]
     proc = subprocess.run(cmd, input=pcm_bytes, capture_output=True, check=True)
@@ -460,6 +523,85 @@ app = FastAPI(
     lifespan=_lifespan,
 )
 
+# Opt-in CORS middleware. API-first deployments don't need CORS, so it
+# stays off by default. Set CORS_ALLOW_ORIGINS to a comma-separated list
+# of origins, or "*" to allow all.
+_cors_origins_env = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+if _cors_origins_env:
+    _cors_origins = ["*"] if _cors_origins_env == "*" else [
+        o.strip() for o in _cors_origins_env.split(",") if o.strip()
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
+        allow_headers=["*"],
+        expose_headers=["X-Route", "X-Cache"],
+    )
+
+
+def _is_upload_file(value: Any) -> bool:
+    """Return True if `value` is a file-upload object.
+
+    FastAPI 0.100+ and Starlette 1.0+ ship distinct `UploadFile` classes
+    (`fastapi.datastructures.UploadFile` vs `starlette.datastructures.UploadFile`),
+    and starlette's form parser always returns the Starlette flavour. An
+    `isinstance(spec, fastapi.UploadFile)` check against the Starlette
+    instance silently returns False — which is how adhoc voice cloning
+    was broken up to v1.1.0. Match both classes explicitly; fall back to
+    duck-typing (has `read` + `filename`) so any future divergence keeps
+    working.
+    """
+    if isinstance(value, (UploadFile, StarletteUploadFile)):
+        return True
+    return (
+        not isinstance(value, (str, bytes))
+        and hasattr(value, "read")
+        and hasattr(value, "filename")
+    )
+
+
+def _validate_synthesis_params(speed: float, cfg_value: float) -> None:
+    """Validate params that the engine doesn't police itself.
+
+    VoxCPM2 doesn't natively support `speed`, so we apply it post-hoc
+    via ffmpeg `atempo`; outside [0.25, 4.0] we reject per OpenAI spec.
+    Above cfg_value ~5 the model frequently degenerates to repetition
+    or NaN, below 0.5 it ignores the reference voice.
+    """
+    if not (SPEED_MIN <= speed <= SPEED_MAX):
+        raise HTTPException(
+            status_code=422,
+            detail=f"speed {speed} out of range. Must be in [{SPEED_MIN}, {SPEED_MAX}].",
+        )
+    if not (CFG_MIN <= cfg_value <= CFG_MAX):
+        raise HTTPException(
+            status_code=422,
+            detail=f"cfg_value {cfg_value} out of range. Must be in [{CFG_MIN}, {CFG_MAX}].",
+        )
+
+
+def _atempo_chain(speed: float) -> list[str]:
+    """Build a `-filter:a` chain for ffmpeg `atempo`.
+
+    atempo accepts [0.5, 2.0] per invocation; for wider ranges we chain
+    (e.g. 0.25 → two 0.5 filters, 4.0 → two 2.0 filters). Fractional
+    values outside that band are split to stay in range.
+    """
+    if abs(speed - 1.0) < 1e-6:
+        return []
+    parts: list[float] = []
+    remaining = speed
+    while remaining > 2.0 + 1e-6:
+        parts.append(2.0)
+        remaining /= 2.0
+    while remaining < 0.5 - 1e-6:
+        parts.append(0.5)
+        remaining /= 0.5
+    parts.append(remaining)
+    return ["-filter:a", ",".join(f"atempo={p:.6f}" for p in parts)]
+
 
 # -------------------------------
 # 7. Synthesis core
@@ -493,11 +635,28 @@ async def _latents_for_request(voice: Optional[str],
     assert _pool is not None
     if speaker_wav is not None:
         wav_bytes = await speaker_wav.read()
+        if not wav_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail="custom_voice_file is empty — upload a valid audio body.",
+            )
         wav_format = (speaker_wav.filename or "").rsplit(".", 1)[-1].lower() or "wav"
         try:
             latents = await _pool.encode_latents(wav=wav_bytes, wav_format=wav_format)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"speaker_wav encode failed: {e}")
+            # nano-vllm-voxcpm raises via a remote-call proxy that wraps the
+            # real error in a multi-line stringified traceback. We keep the
+            # final line (the actual cause: "Format not recognised.", etc.)
+            # and drop the stack — clients shouldn't see our library tree.
+            msg = str(e).strip().splitlines()[-1] or "encode_latents failed"
+            log.warning(f"custom_voice_file encode failed (trimmed): {msg}")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Failed to decode custom_voice_file — not a valid audio "
+                    f"stream or unsupported codec ({msg})."
+                ),
+            )
         return latents, True
 
     name = (voice or DEFAULT_VOICE).lower()
@@ -552,7 +711,10 @@ async def create_speech(request: Request):
     speaker_wav: Optional[UploadFile] = None
     if "application/json" in content_type:
         body = await request.json()
-        req = SpeechRequest(**body)
+        try:
+            req = SpeechRequest(**body)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors())
     else:
         # multipart or urlencoded
         form = await request.form()
@@ -560,20 +722,25 @@ async def create_speech(request: Request):
         _cache_field: Optional[bool] = None
         if _raw_cache is not None:
             _cache_field = str(_raw_cache).strip().lower() not in ("0", "false", "no", "off")
-        req = SpeechRequest(
-            model=form.get("model") or SERVED_MODEL_NAME,
-            voice=form.get("voice"),
-            input=form.get("input") or "",
-            response_format=form.get("response_format") or "mp3",
-            speed=float(form.get("speed") or 1.0),
-            cfg_value=float(form.get("cfg_value") or 2.0),
-            cache=_cache_field,
-        )
+        try:
+            req = SpeechRequest(
+                model=form.get("model") or SERVED_MODEL_NAME,
+                voice=form.get("voice"),
+                input=form.get("input") or "",
+                response_format=form.get("response_format") or "mp3",
+                speed=float(form.get("speed") or 1.0),
+                cfg_value=float(form.get("cfg_value") or 2.0),
+                cache=_cache_field,
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors())
         # Canonical field name is `custom_voice_file`. `speaker_wav` kept as
         # alias for v1.0.0 / Coqui-style clients. If both are sent, the
-        # canonical one wins.
+        # canonical one wins. See `_is_upload_file` — in FastAPI 0.136+ the
+        # fastapi.UploadFile and starlette.UploadFile classes diverged, and
+        # a straight `isinstance(spec, UploadFile)` would silently fail.
         spec = form.get("custom_voice_file") or form.get("speaker_wav")
-        if isinstance(spec, UploadFile):
+        if _is_upload_file(spec):
             speaker_wav = spec
 
     if not req.input:
@@ -585,6 +752,7 @@ async def create_speech(request: Request):
             detail=f"response_format '{fmt}' not supported. "
                    f"Use one of: {sorted(SUPPORTED_FORMATS)}",
         )
+    _validate_synthesis_params(req.speed, req.cfg_value)
 
     params = {"cfg_value": req.cfg_value}
     voice_name = (req.voice or DEFAULT_VOICE).lower() if speaker_wav is None else "adhoc"
@@ -621,7 +789,7 @@ async def create_speech(request: Request):
         _in_flight -= 1
 
     try:
-        encoded = _encode_audio(pcm, fmt)
+        encoded = _encode_audio(pcm, fmt, speed=req.speed)
     except subprocess.CalledProcessError as e:
         raise HTTPException(
             status_code=500,
@@ -661,19 +829,30 @@ async def create_speech_stream(request: Request):
     content_type = (request.headers.get("content-type") or "").lower()
     if "application/json" in content_type:
         body = await request.json()
-        req = SpeechRequest(**body)
+        try:
+            req = SpeechRequest(**body)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors())
     else:
         form = await request.form()
-        req = SpeechRequest(
-            model=form.get("model") or SERVED_MODEL_NAME,
-            voice=form.get("voice"),
-            input=form.get("input") or "",
-            response_format="wav",
-            speed=float(form.get("speed") or 1.0),
-            cfg_value=float(form.get("cfg_value") or 2.0),
-        )
+        try:
+            req = SpeechRequest(
+                model=form.get("model") or SERVED_MODEL_NAME,
+                voice=form.get("voice"),
+                input=form.get("input") or "",
+                response_format="wav",
+                speed=float(form.get("speed") or 1.0),
+                cfg_value=float(form.get("cfg_value") or 2.0),
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=e.errors())
     if not req.input:
         raise HTTPException(status_code=422, detail="'input' must be non-empty.")
+    # Streaming currently ignores `speed` — the stream is emitted at the
+    # engine's native rate, and atempo would require buffering which
+    # would defeat the point of streaming. `speed != 1.0` is accepted
+    # for parity with /v1/audio/speech (same validation) but not applied.
+    _validate_synthesis_params(req.speed, req.cfg_value)
 
     latents, _ = await _latents_for_request(req.voice, None)
 
@@ -743,7 +922,7 @@ async def list_models():
     }
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     load = min(1.0, _in_flight / max(1, VLLM_MAX_NUM_SEQS))
     accepts = bool(_engine_ready) and load < 1.0
