@@ -89,20 +89,20 @@ cp .env.example .env      # tweak VOXCPM_MODEL, VLLM_* if needed
 ./setup.sh                # creates venv, installs nano-vllm-voxcpm,
                           # pre-downloads the model and 6 voices
 source venv/bin/activate
-uvicorn main_tts:app --host 0.0.0.0 --port 5100
+uvicorn main_tts:app --host 0.0.0.0 --port 9004
 ```
 
 Then:
 
 ```bash
 # Standard voice
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"input":"Hola mundo","voice":"alloy"}' \
   -o hello.mp3
 
 # Adhoc voice cloning
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -F "input=Hola mundo" \
   -F "speaker_wav=@my_voice.wav" \
   -o hello.wav
@@ -116,17 +116,17 @@ Three equivalent ways to request it — use whichever the client finds most natu
 
 ```bash
 # (1) JSON body field — OpenAI-style extension
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"input":"Notas privadas","voice":"alloy","cache":false}' \
   -o out.mp3
 
 # (2) Multipart form field — accepts 0 / false / no / off
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -F input='Notas privadas' -F voice=alloy -F cache=false -o out.mp3
 
 # (3) Standard HTTP header — no body changes needed
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -H 'Cache-Control: no-cache' -H 'Content-Type: application/json' \
   -d '{"input":"Notas privadas","voice":"alloy"}' \
   -o out.mp3
@@ -152,7 +152,7 @@ full surface. The most common overrides:
 | `VOXCPM_INFERENCE_TIMESTEPS` | `10` | VoxCPM2-specific denoising steps. |
 | `AUDIO_CACHE_DIR` | `assets/cache` | MD5 audio cache location. |
 | `CACHE_TTL_MINUTES` | `10080` (7 days) | 0 to disable. |
-| `PORT` | `5100` | HTTP port. |
+| `PORT` | `9004` | HTTP port. |
 | `REDIS_URL` | _(empty)_ | Optional; enables self-registration for a router. |
 
 ## Deployment

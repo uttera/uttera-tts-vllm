@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.2.0
+# Version: 1.3.0
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,17 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.3.0 (2026-04-18): Default port migrated from 5100 → 9004 in
+#   lockstep with the sibling `uttera-tts-hotcold` v2.3.0. Canonical
+#   Uttera-stack port scheme: TTS=9004 (all backends), STT=9005 (all
+#   backends). The Gatekeeper routes by service family; swapping
+#   hotcold ↔ vllm is a backend ExecStart change, not a port change.
+#   The 9000-9099 range is IANA "User Ports" with no canonical
+#   assignment and no mainstream collisions. Updated: PORT env
+#   default in main_tts.py, Dockerfile EXPOSE/CMD, docker-compose
+#   port mapping and healthcheck, .env.example, README, API.md, CI
+#   workflow probes, issue template. Migration: set `PORT=5100` in
+#   env to preserve the legacy endpoint, else repoint at `:9004`.
 # - 1.2.0 (2026-04-18): OpenAI-compat polish sweep. Eight findings
 #   uncovered by the full endpoint validation run against v1.1.0 —
 #   one CRITICAL bug plus seven polish items. All backward-compatible
@@ -168,7 +179,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 
 # Validation ranges.
 # `speed` — OpenAI spec for /v1/audio/speech is [0.25, 4.0].
@@ -228,7 +239,7 @@ ROUTING_DRAIN_CAP_SECONDS = float(os.environ.get("ROUTING_DRAIN_CAP_SECONDS", "1
 # Redis self-registration (opt-in).
 REDIS_URL = os.environ.get("REDIS_URL", "")
 REDIS_NODE_HOST = os.environ.get("NODE_HOST", "localhost")
-REDIS_NODE_PORT = int(os.environ.get("NODE_PORT", "5100"))
+REDIS_NODE_PORT = int(os.environ.get("NODE_PORT", "9004"))
 REDIS_NODE_ID = os.environ.get("NODE_ID", "") or f"{REDIS_NODE_HOST}:{REDIS_NODE_PORT}"
 REDIS_KEY = f"tts:nodes:{REDIS_NODE_ID}"
 REDIS_PUBLISH_INTERVAL = float(os.environ.get("REDIS_PUBLISH_INTERVAL", "0.5"))
@@ -951,6 +962,6 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", "5100"))
+    port = int(os.environ.get("PORT", "9004"))
     host = os.environ.get("HOST", "0.0.0.0")
     uvicorn.run("main_tts:app", host=host, port=port, log_level="debug" if DEBUG else "info")

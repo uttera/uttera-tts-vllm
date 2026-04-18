@@ -2,7 +2,7 @@
 
 `uttera-tts-vllm` exposes an OpenAI-compatible speech-synthesis surface, extended with file-based voice registry and adhoc voice cloning.
 
-Base URL (default): `http://localhost:5100`
+Base URL (default): `http://localhost:9004`
 
 ## `POST /v1/audio/speech`
 
@@ -30,7 +30,7 @@ Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **m
 ### Example — JSON body
 
 ```bash
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{"model":"tts-1","voice":"alloy","input":"Hola mundo","response_format":"mp3"}' \
   -o hello.mp3
@@ -41,7 +41,7 @@ curl -X POST http://localhost:5100/v1/audio/speech \
 The upload is consumed in-request and never persisted on the server:
 
 ```bash
-curl -X POST http://localhost:5100/v1/audio/speech \
+curl -X POST http://localhost:9004/v1/audio/speech \
   -F "input=Hola mundo" \
   -F "custom_voice_file=@my_voice.wav" \
   -F "response_format=wav" \
@@ -77,7 +77,7 @@ The server's audio cache speeds up repeated requests by storing a synthesised fi
 
 1. **JSON body** — OpenAI-style extension:
    ```bash
-   curl -X POST http://localhost:5100/v1/audio/speech \
+   curl -X POST http://localhost:9004/v1/audio/speech \
      -H 'Content-Type: application/json' \
      -d '{"input":"Notas privadas del paciente","voice":"alloy","cache":false}' \
      -o out.mp3
@@ -85,14 +85,14 @@ The server's audio cache speeds up repeated requests by storing a synthesised fi
 
 2. **Multipart form** — same contract, accepts any of `0`, `false`, `no`, `off`:
    ```bash
-   curl -X POST http://localhost:5100/v1/audio/speech \
+   curl -X POST http://localhost:9004/v1/audio/speech \
      -F input='Notas privadas del paciente' \
      -F voice=alloy -F cache=false -o out.mp3
    ```
 
 3. **HTTP header** — standard `Cache-Control` semantics (works from any HTTP client without touching the body):
    ```bash
-   curl -X POST http://localhost:5100/v1/audio/speech \
+   curl -X POST http://localhost:9004/v1/audio/speech \
      -H 'Cache-Control: no-cache' -H 'Content-Type: application/json' \
      -d '{"input":"Notas privadas del paciente","voice":"alloy"}' \
      -o out.mp3
@@ -111,7 +111,7 @@ The server's audio cache speeds up repeated requests by storing a synthesised fi
 Stream the audio as `audio/wav` chunks as soon as the engine emits them. No cache. Registered voices only (adhoc cloning on streaming will land in a later release — see `ROADMAP.md`).
 
 ```bash
-curl -N -X POST http://localhost:5100/v1/audio/speech/stream \
+curl -N -X POST http://localhost:9004/v1/audio/speech/stream \
   -H 'Content-Type: application/json' \
   -d '{"voice":"nova","input":"Long text to stream…"}' \
   -o stream.wav
