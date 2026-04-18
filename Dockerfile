@@ -4,7 +4,7 @@
 # Build:
 #   docker build -t uttera-tts-vllm:0.1.0 .
 # Run (with GPU):
-#   docker run --gpus all --rm -p 5100:5100 \
+#   docker run --gpus all --rm -p 9004:9004 \
 #       -e VOXCPM_MODEL=openbmb/VoxCPM2 \
 #       uttera-tts-vllm:0.1.0
 
@@ -37,8 +37,8 @@ RUN pip install --upgrade pip setuptools wheel \
 
 COPY . /app/
 
-EXPOSE 5100
+EXPOSE 9004
 
 ENV XDG_CACHE_HOME=/app/assets/models
 
-CMD ["uvicorn", "main_tts:app", "--host", "0.0.0.0", "--port", "5100"]
+CMD ["uvicorn", "main_tts:app", "--host", "0.0.0.0", "--port", "9004"]

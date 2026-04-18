@@ -88,14 +88,14 @@ jobs:
           source venv/bin/activate
           VOXCPM_MODEL=openbmb/VoxCPM2 \
           VLLM_GPU_MEM_UTIL=0.5 \
-            uvicorn main_tts:app --host 127.0.0.1 --port 5100 &
+            uvicorn main_tts:app --host 127.0.0.1 --port 9004 &
           for i in $(seq 1 120); do
             sleep 3
-            curl -sf http://127.0.0.1:5100/health | grep -q '"engine_ready":true' && break
+            curl -sf http://127.0.0.1:9004/health | grep -q '"engine_ready":true' && break
           done
       - name: Health check
         run: |
-          HEALTH=$(curl -s http://127.0.0.1:5100/health)
+          HEALTH=$(curl -s http://127.0.0.1:9004/health)
           echo "$HEALTH" | python3 -c "
           import json, sys
           d = json.load(sys.stdin)
@@ -107,7 +107,7 @@ jobs:
           "
       - name: Synthesis smoke test
         run: |
-          curl -s -X POST http://127.0.0.1:5100/v1/audio/speech \
+          curl -s -X POST http://127.0.0.1:9004/v1/audio/speech \
             -H 'Content-Type: application/json' \
             -d '{"model":"tts-1","voice":"alloy","input":"Smoke test."}' \
             -o /tmp/smoke.mp3 -w "HTTP=%{http_code}\n"
