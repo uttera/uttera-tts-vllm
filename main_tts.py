@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.3.0
+# Version: 1.4.0
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,15 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.4.0 (2026-04-21): Prometheus `/metrics` endpoint. Exposes
+#   request counters (by endpoint/method/status), request duration
+#   histograms, in-flight gauge, engine-ready gauge, TTS-specific
+#   counters (synthesis by response_format + route + cache-decision,
+#   characters synthesised), per-op inference duration histograms
+#   (synthesis, ffmpeg_encode), voices-loaded gauge, error counters
+#   typed by cause, and a build_info gauge with version + engine +
+#   model labels. Scrape with Telegraf's inputs.prometheus or any
+#   OpenMetrics consumer. Additive — existing endpoints unchanged.
 # - 1.3.0 (2026-04-18): Default port migrated from 5100 → 9004 in
 #   lockstep with the sibling `uttera-tts-hotcold` v2.3.0. Canonical
 #   Uttera-stack port scheme: TTS=9004 (all backends), STT=9005 (all
@@ -160,6 +169,14 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, ValidationError
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
@@ -179,7 +196,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "1.3.0"
+SERVER_VERSION = "1.4.0"
 
 # Validation ranges.
 # `speed` — OpenAI spec for /v1/audio/speech is [0.25, 4.0].
@@ -267,6 +284,90 @@ _total_errors: int = 0
 
 _redis: Optional[aioredis.Redis] = None
 _redis_task: Optional[asyncio.Task] = None
+
+
+# -------------------------------
+# 2b. Prometheus metrics
+# -------------------------------
+#
+# Naming convention: `uttera_tts_<thing>`. Labels kept deliberately
+# low-cardinality — no request_id, no voice name (elite voices are
+# an open set), no input text. `endpoint` is clamped to the known
+# route list so unknown paths can't blow up cardinality.
+
+_HTTP_REQUESTS_TOTAL = Counter(
+    "uttera_tts_requests_total",
+    "HTTP requests by endpoint, method and status code",
+    ["endpoint", "method", "status"],
+)
+
+_HTTP_REQUEST_DURATION = Histogram(
+    "uttera_tts_request_duration_seconds",
+    "HTTP request wall-clock duration in seconds",
+    ["endpoint", "method"],
+    buckets=(0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+)
+
+_INFLIGHT_GAUGE = Gauge(
+    "uttera_tts_inflight_requests",
+    "Requests currently being processed by the engine",
+)
+
+_ENGINE_READY_GAUGE = Gauge(
+    "uttera_tts_engine_ready",
+    "1 if the TTS engine is loaded and ready, 0 otherwise",
+)
+
+_VOICES_LOADED_GAUGE = Gauge(
+    "uttera_tts_voices_loaded",
+    "Number of voices currently resident (latents precomputed in VRAM)",
+)
+
+_SYNTHESIS_TOTAL = Counter(
+    "uttera_tts_synthesis_total",
+    "Synthesis requests broken down by output format, lane, and cache decision",
+    ["response_format", "route", "cache"],
+    # response_format ∈ {mp3, wav, pcm, opus, flac}
+    # route           ∈ {HOT, CACHE, ADHOC}
+    # cache           ∈ {HIT, MISS, BYPASS, ADHOC, DISABLED}
+)
+
+_CHARACTERS_SYNTHESISED_TOTAL = Counter(
+    "uttera_tts_characters_synthesised_total",
+    "Total input characters successfully synthesised (billing / throughput proxy)",
+    ["response_format"],
+)
+
+_INFERENCE_DURATION = Histogram(
+    "uttera_tts_inference_duration_seconds",
+    "Per-call inference latency in seconds, by op",
+    ["op"],                         # synthesis | ffmpeg_encode
+    buckets=(0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+
+_ERRORS_TOTAL = Counter(
+    "uttera_tts_errors_total",
+    "Errors by type",
+    ["type"],                       # decode | validation | model | encoding
+)
+
+_BUILD_INFO = Gauge(
+    "uttera_tts_build_info",
+    "Build metadata (label values carry version, engine and served model id)",
+    ["version", "engine", "model"],
+)
+
+# Known HTTP routes — used to normalise the `endpoint` label so
+# cardinality stays bounded even if someone probes unknown paths.
+_KNOWN_ENDPOINTS = {
+    "/v1/audio/speech",
+    "/v1/audio/speech/stream",
+    "/v1/voices",
+    "/admin/reload-voices",
+    "/v1/models",
+    "/health",
+    "/metrics",
+}
 
 
 # -------------------------------
@@ -552,6 +653,43 @@ if _cors_origins_env:
     )
 
 
+# Prometheus middleware — tracks every HTTP request generically.
+# Endpoint-specific labels (response_format, route, cache, char
+# count) are attached inside the endpoint handlers for richer
+# breakdowns.
+
+class _PrometheusMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        method = request.method
+        if path == "/metrics":
+            return await call_next(request)
+        endpoint = path if path in _KNOWN_ENDPOINTS else "other"
+        t0 = time.monotonic()
+        status = 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            elapsed = time.monotonic() - t0
+            _HTTP_REQUESTS_TOTAL.labels(
+                endpoint=endpoint, method=method, status=str(status)
+            ).inc()
+            _HTTP_REQUEST_DURATION.labels(
+                endpoint=endpoint, method=method
+            ).observe(elapsed)
+
+app.add_middleware(_PrometheusMiddleware)
+
+# Build_info is a static gauge — set once at module import.
+_BUILD_INFO.labels(
+    version=SERVER_VERSION,
+    engine="nano-vllm-voxcpm",
+    model=os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2"),
+).set(1)
+
+
 def _is_upload_file(value: Any) -> bool:
     """Return True if `value` is a file-upload object.
 
@@ -703,6 +841,21 @@ class SpeechRequest(BaseModel):
 # 8. Endpoints
 # -------------------------------
 
+@app.get("/metrics")
+async def metrics():
+    """Prometheus-format scrape endpoint.
+
+    Scrape with Telegraf's `inputs.prometheus` plugin, Prometheus
+    itself, or any OpenMetrics-compatible consumer. Cardinality is
+    bounded by design (fixed endpoint list, no per-request-id labels,
+    voices are counted rather than labelled).
+    """
+    _ENGINE_READY_GAUGE.set(1 if _engine_ready else 0)
+    _INFLIGHT_GAUGE.set(_in_flight)
+    _VOICES_LOADED_GAUGE.set(len(_voice_latents))
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 @app.post("/v1/audio/speech")
 async def create_speech(request: Request):
     """OpenAI-compatible speech synthesis.
@@ -782,6 +935,11 @@ async def create_speech(request: Request):
         cache_file = _cache_path(key, fmt)
         if _cache_hit(cache_file):
             log.debug(f"cache hit: {cache_file.name}")
+            _SYNTHESIS_TOTAL.labels(
+                response_format=fmt, route="CACHE", cache="HIT"
+            ).inc()
+            # Cache hits don't bill characters (the caller already
+            # paid on the original MISS that populated the cache).
             return FileResponse(
                 cache_file,
                 media_type=f"audio/{fmt}",
@@ -791,17 +949,23 @@ async def create_speech(request: Request):
     latents, _ = await _latents_for_request(req.voice, speaker_wav)
 
     _in_flight += 1
+    _INFLIGHT_GAUGE.inc()
     try:
-        pcm = await _synthesize_to_pcm(req.input, latents, req.cfg_value)
+        with _INFERENCE_DURATION.labels(op="synthesis").time():
+            pcm = await _synthesize_to_pcm(req.input, latents, req.cfg_value)
     except Exception:
         _total_errors += 1
+        _ERRORS_TOTAL.labels(type="model").inc()
         raise
     finally:
         _in_flight -= 1
+        _INFLIGHT_GAUGE.dec()
 
     try:
-        encoded = _encode_audio(pcm, fmt, speed=req.speed)
+        with _INFERENCE_DURATION.labels(op="ffmpeg_encode").time():
+            encoded = _encode_audio(pcm, fmt, speed=req.speed)
     except subprocess.CalledProcessError as e:
+        _ERRORS_TOTAL.labels(type="encoding").inc()
         raise HTTPException(
             status_code=500,
             detail=f"Audio encoding failed: ffmpeg exited {e.returncode}",
@@ -823,10 +987,15 @@ async def create_speech(request: Request):
         x_cache = "DISABLED"
     else:
         x_cache = "MISS"
+    route = "ADHOC" if adhoc else "HOT"
+    _SYNTHESIS_TOTAL.labels(
+        response_format=fmt, route=route, cache=x_cache
+    ).inc()
+    _CHARACTERS_SYNTHESISED_TOTAL.labels(response_format=fmt).inc(len(req.input))
     return Response(
         content=encoded,
         media_type=f"audio/{fmt}",
-        headers={"X-Route": "ADHOC" if adhoc else "HOT", "X-Cache": x_cache},
+        headers={"X-Route": route, "X-Cache": x_cache},
     )
 
 
@@ -870,6 +1039,8 @@ async def create_speech_stream(request: Request):
     async def _stream():
         global _in_flight, _total_errors, _total_completed
         _in_flight += 1
+        _INFLIGHT_GAUGE.inc()
+        t0 = time.monotonic()
         try:
             yield _streaming_wav_header()
             async for chunk in _pool.generate(
@@ -883,12 +1054,19 @@ async def create_speech_stream(request: Request):
                     arr = np.asarray(chunk).squeeze()
                 yield _float32_to_int16_pcm(arr.astype("float32"))
             _total_completed += 1
+            _SYNTHESIS_TOTAL.labels(
+                response_format="wav", route="HOT", cache="DISABLED"
+            ).inc()
+            _CHARACTERS_SYNTHESISED_TOTAL.labels(response_format="wav").inc(len(req.input))
+            _INFERENCE_DURATION.labels(op="synthesis").observe(time.monotonic() - t0)
         except Exception:
             _total_errors += 1
+            _ERRORS_TOTAL.labels(type="model").inc()
             log.exception("stream failed")
             raise
         finally:
             _in_flight -= 1
+            _INFLIGHT_GAUGE.dec()
 
     return StreamingResponse(_stream(), media_type="audio/wav", headers={"X-Route": "HOT"})
 

@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-21
+
+Prometheus `/metrics` endpoint. Additive only — all existing
+endpoints unchanged.
+
+### Added
+
+- **`GET /metrics`** — OpenMetrics-format scrape endpoint using the
+  default `prometheus_client` global registry. Scrape with Telegraf's
+  `inputs.prometheus` plugin, Prometheus itself, or any other
+  OpenMetrics-compatible consumer.
+- **HTTP-level metrics** (bounded cardinality — unknown paths fall
+  into `"other"`):
+  - `uttera_tts_requests_total{endpoint, method, status}`
+  - `uttera_tts_request_duration_seconds{endpoint, method}` —
+    buckets 25 ms → 60 s
+  - `uttera_tts_inflight_requests` — Gauge reflecting `_in_flight`
+- **TTS-specific metrics**:
+  - `uttera_tts_synthesis_total{response_format, route, cache}` —
+    Counter broken down by the output format
+    (`mp3` / `wav` / `pcm` / `opus` / `flac`), lane
+    (`HOT` / `CACHE` / `ADHOC`) and cache decision
+    (`HIT` / `MISS` / `BYPASS` / `ADHOC` / `DISABLED`). The labels
+    match the `X-Route` / `X-Cache` response headers exactly.
+  - `uttera_tts_characters_synthesised_total{response_format}` —
+    Counter summing `len(req.input)` for every successful
+    synthesis. Billing / throughput proxy. Cache hits do NOT
+    re-bill (the caller already paid when the entry was first
+    populated).
+  - `uttera_tts_inference_duration_seconds{op}` — Histogram per
+    model call kind: `synthesis` (nano-vllm-voxcpm generation) and
+    `ffmpeg_encode` (output-format transcoding). Separates GPU
+    time from CPU-encoder time.
+  - `uttera_tts_voices_loaded` — Gauge of voice names resident in
+    VRAM (latents precomputed), refreshed on every `/metrics`
+    scrape.
+- **State gauges** (refreshed on every `/metrics` scrape so they're
+  always current):
+  - `uttera_tts_engine_ready` — 1 once the engine has passed
+    startup, 0 during load.
+- **`uttera_tts_errors_total{type}`** — Counter of errors by cause.
+  Types: `model` (uncaught synthesis exception), `encoding` (ffmpeg
+  transcode failure). Generic 4xx errors stay visible via the
+  `status` label on `requests_total`.
+- **`uttera_tts_build_info{version, engine, model}`** — Gauge set
+  to `1` with the running `SERVER_VERSION`, engine
+  (`nano-vllm-voxcpm`), and the actual `VOXCPM_MODEL` as labels, so
+  dashboards can show version + model in the field without a
+  separate lookup.
+
+### Instrumentation notes
+
+- The streaming endpoint (`/v1/audio/speech/stream`) increments
+  `synthesis_total` with `route="HOT"` + `cache="DISABLED"` and
+  records the total stream duration under the `synthesis` op
+  (streaming bypasses the cache entirely and emits audio as the
+  engine generates it).
+- Cache hits increment `synthesis_total{route="CACHE",cache="HIT"}`
+  but do NOT tick `characters_synthesised_total`.
+
+### Changed
+
+- **New runtime dep**: `prometheus-client>=0.20.0`.
+- **`SERVER_VERSION` bumped to `1.4.0`.**
+
+### Not changed
+
+- `/v1/audio/speech`, `/v1/audio/speech/stream`, `/v1/voices`,
+  `/admin/reload-voices`, `/v1/models`, `/health` behave identically
+  to v1.3.0. The `/health` body still reports `in_flight` /
+  `total_completed` / `total_errors` for callers that have them
+  hardcoded; Prometheus counters are the new canonical observability
+  path.
+
 ## [1.3.0] - 2026-04-18
 
 ### Changed
