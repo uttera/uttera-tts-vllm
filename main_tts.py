@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.4.1
+# Version: 1.4.2
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,14 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.4.2 (2026-04-21): setup.sh now pins torch/torchaudio to 2.8.x and
+#   pre-installs the official flash-attn 2.8.3 release wheel matching the
+#   resolved torch / python / CXX11-ABI combo. Previously the resolver
+#   picked up torch 2.9.x and flash-attn then built from source, which
+#   breaks on systems where the host nvcc CUDA major doesnt match torch
+#   (seen on Ubuntu 25.10 hosts with nvcc 13.x and torch-cu128). The
+#   pre-built wheel sidesteps the source build entirely. No runtime code
+#   change — identical server behaviour.
 # - 1.4.1 (2026-04-21): setup.sh now prefers python3.11 (then 3.12,
 #   then falls back to system python3 with a warning). The upstream
 #   `nano-vllm-voxcpm` package declares `Requires-Python >=3.10,<3.13`,
@@ -202,7 +210,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "1.4.0"
+SERVER_VERSION = "1.4.2"
 
 # Validation ranges.
 # `speed` — OpenAI spec for /v1/audio/speech is [0.25, 4.0].
