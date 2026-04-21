@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-04-21
+
+### Changed
+
+- `setup.sh` now prefers `python3.11`, then `python3.12`, then falls
+  back to system `python3` with a warning. Reason: the upstream
+  `nano-vllm-voxcpm` package on PyPI declares
+  `Requires-Python >=3.10,<3.13`, so fresh installs on py3.13+ systems
+  (e.g. Ubuntu 25.10 which ships only py3.13) fail with
+  `ERROR: No matching distribution found for nano-vllm-voxcpm>=2.0.0`.
+  The 3.13+ fallback now prints an explicit remediation hint pointing
+  at `pyenv` / the deadsnakes PPA. No runtime code changes — server
+  behaviour is identical.
+
 ## [1.4.0] - 2026-04-21
 
 Prometheus `/metrics` endpoint. Additive only — all existing
