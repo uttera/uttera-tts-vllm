@@ -194,6 +194,35 @@ full surface. The most common overrides:
 | `PORT` | `9004` | HTTP port. |
 | `REDIS_URL` | _(empty)_ | Optional; enables self-registration for a router. |
 
+## Observability (`/metrics`)
+
+`GET /metrics` returns Prometheus-format metrics for direct scraping
+by Prometheus, Telegraf's `inputs.prometheus` plugin, or any other
+OpenMetrics-compatible consumer. Metrics are prefixed with
+`uttera_tts_` and use low-cardinality labels (no voice names, no
+input text, no request IDs).
+
+```toml
+[[inputs.prometheus]]
+  urls = ["http://tts-host:9004/metrics"]
+  interval = "15s"
+```
+
+Key series:
+
+| Metric | Type | Use |
+|---|---|---|
+| `uttera_tts_requests_total{endpoint,method,status}` | Counter | Per-endpoint request rate + status mix |
+| `uttera_tts_request_duration_seconds{endpoint,method}` | Histogram | HTTP p50/p95/p99 (total RTT) |
+| `uttera_tts_inflight_requests` | Gauge | Live load |
+| `uttera_tts_synthesis_total{response_format,route,cache}` | Counter | Traffic mix across format × lane × cache decision (same semantics as `X-Route`/`X-Cache` headers) |
+| `uttera_tts_characters_synthesised_total{response_format}` | Counter | Input chars synthesised — billing / throughput proxy. Cache hits don't re-bill |
+| `uttera_tts_inference_duration_seconds{op}` | Histogram | Per-call latency, `op` in `{synthesis, ffmpeg_encode}` — separates GPU time from CPU-encoder time |
+| `uttera_tts_voices_loaded` | Gauge | Count of voices resident in VRAM |
+| `uttera_tts_engine_ready` | Gauge | 1 once engine is warmed up |
+| `uttera_tts_errors_total{type}` | Counter | Typed errors (`model` / `encoding`) |
+| `uttera_tts_build_info{version,engine,model}` | Gauge | Version + model in the field (value always `1`) |
+
 ## Deployment
 
 - **Docker**: `docker compose up -d` (GPU passthrough configured in

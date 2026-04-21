@@ -22,5 +22,10 @@ python-dotenv>=1.0.0
 # Redis self-registration (opt-in, same pattern as the other Uttera repos).
 redis[asyncio]>=5.0.0
 
+# Prometheus /metrics endpoint — uses the default global registry.
+# Scrape with Telegraf's inputs.prometheus, Prometheus itself, or any
+# OpenMetrics-compatible consumer.
+prometheus-client>=0.20.0
+
 # Used by ffmpeg wrapping for mp3/opus/flac output encoding. ffmpeg itself
 # must be present on the system PATH (`apt install ffmpeg` or similar).
