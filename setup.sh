@@ -36,15 +36,41 @@ source venv/bin/activate
 echo "[*] Installing build-time dependencies..."
 pip install --upgrade pip setuptools wheel
 
-# flash-attn is a transitive dependency of nano-vllm-voxcpm and it builds
-# from source (no pre-built wheels for every torch/CUDA combo). Its
-# setup.py imports torch, packaging, psutil, and ninja. pip's default
-# PEP 517 build isolation gives the build a clean sandbox, so those
-# imports fail. We install them first, then run the main install with
-# --no-build-isolation so flash-attn's build picks them up from the venv.
-echo "[*] Pre-installing flash-attn build dependencies..."
-pip install "torch>=2.5.0,<2.10.0" "torchaudio>=2.5.0,<2.10.0" \
+# flash-attn is a transitive dependency of nano-vllm-voxcpm. It has NO
+# pre-built wheels on PyPI — it builds from source and requires the host
+# nvcc's CUDA major version to match what torch was compiled against.
+# On systems with torch-cu128 but system nvcc 13.x the build aborts with
+# "The detected CUDA version (13.x) mismatches the version that was used
+# to compile PyTorch (12.8)".
+#
+# To avoid the source build entirely we pre-install an official flash-attn
+# release wheel. Those wheels only cover torch up to 2.8.x at the moment
+# (flash-attn v2.8.3, 2025-08), so we pin torch to 2.8.x here.
+echo "[*] Installing torch 2.8.x + flash-attn build prereqs..."
+pip install "torch>=2.8.0,<2.9.0" "torchaudio>=2.8.0,<2.9.0" \
             packaging psutil ninja
+
+# Pre-install flash-attn from its official release wheel, matching the
+# torch / python / CXX11-ABI combo we just installed. If no matching
+# wheel exists (e.g. torch upgraded past 2.8), we fall through to the
+# normal resolver below — which will attempt the source build and may
+# fail loudly on CUDA-version mismatch.
+echo "[*] Locating matching flash-attn release wheel..."
+FLASH_ATTN_VER="2.8.3"
+PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+TORCH_MM=$(python -c "import torch, re; m=re.match(r'(\d+)\.(\d+)', torch.__version__); print(f'{m.group(1)}.{m.group(2)}')")
+CXX11ABI=$(python -c "import torch; print('TRUE' if torch.compiled_with_cxx11_abi() else 'FALSE')")
+FLASH_ATTN_WHEEL="flash_attn-${FLASH_ATTN_VER}+cu12torch${TORCH_MM}cxx11abi${CXX11ABI}-${PY_TAG}-${PY_TAG}-linux_x86_64.whl"
+FLASH_ATTN_URL="https://github.com/Dao-AILab/flash-attention/releases/download/v${FLASH_ATTN_VER}/${FLASH_ATTN_WHEEL}"
+echo "    -> ${FLASH_ATTN_WHEEL}"
+if pip install "${FLASH_ATTN_URL}"; then
+    echo "    -> flash-attn installed from pre-built wheel"
+else
+    echo "    [!] Could not fetch pre-built flash-attn wheel. The next step"
+    echo "        will try to build it from source — which requires the host"
+    echo "        nvcc to match torch's CUDA major. If that fails, install"
+    echo "        CUDA 12.x toolkit or downgrade the host nvcc."
+fi
 
 echo "[*] Installing core dependencies from requirements.txt (may take several minutes)..."
 pip install --no-build-isolation -r requirements.txt

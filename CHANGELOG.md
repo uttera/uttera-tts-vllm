@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-04-21
+
+### Changed
+
+- `setup.sh` now pins `torch` / `torchaudio` to `2.8.x` and pre-installs
+  the official `flash-attn 2.8.3` release wheel from GitHub (matching
+  the resolved torch minor, Python version and CXX11-ABI flag), before
+  running `pip install --no-build-isolation -r requirements.txt`.
+
+### Why
+
+- flash-attn has no pre-built wheels on PyPI and its source build
+  requires the host `nvcc`'s CUDA major to match what `torch` was
+  compiled against. On Ubuntu 25.10 hosts (which only ship
+  `cuda-toolkit-13-0-local`) paired with `torch-cu128`, the build aborts
+  with `RuntimeError: The detected CUDA version (13.0) mismatches the
+  version that was used to compile PyTorch (12.8)`.
+- Upstream flash-attn v2.8.3 does not publish a torch 2.9 wheel yet, so
+  the previous unconstrained `torch>=2.5.0,<2.10.0` pin resolved to 2.9.x
+  and fell back to the source build. Pinning to 2.8.x restores a path
+  that has a matching pre-built wheel.
+
+### Notes
+
+- The ABI and torch-minor are auto-detected at install time so the
+  script keeps working across venv re-builds without hard-coding a
+  specific wheel filename.
+- If the release URL 404s (e.g. a future torch upgrade), the script
+  prints a remediation hint and lets pip fall through to its normal
+  behaviour — which will try the source build and fail loudly on CUDA
+  mismatch, surfacing the underlying problem instead of hiding it.
+
 ## [1.4.1] - 2026-04-21
 
 ### Changed
