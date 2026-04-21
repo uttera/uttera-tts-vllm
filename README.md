@@ -11,13 +11,19 @@ High-throughput **Text-to-Speech** server built on
 continuous-batching engine. VoxCPM2 today, OpenAI-compatible API,
 adhoc voice cloning on day one.
 
-> **Status**: v1.0.0 — first stable release. Validated end-to-end on
-> NVIDIA RTX 5090 (Blackwell, 32 GB) against the 40-prompt Spanish
-> corpus: 1024/1024 OK at every burst profile, 600/600 OK under
-> 5-minute sustained load, aggregate throughput plateaus near 4.3 rps
-> (see [`uttera-benchmarks` Run 6](https://github.com/uttera/uttera-benchmarks/tree/master/results/2026-04-17-run6-vllm-tts40w)).
-> API surface is now frozen behind semver — see [CHANGELOG.md](CHANGELOG.md)
-> for the full list and [ROADMAP.md](ROADMAP.md) for v1.x plans.
+> **Status**: v1.3.0 — stable. The API surface (endpoints, cache opt-out
+> semantics, `X-Cache` header values, canonical port `9004`) is frozen
+> under SemVer; no breaking changes inside `1.x`. The v1.0.0 baseline
+> was validated end-to-end on NVIDIA RTX 5090 (Blackwell, 32 GB) against
+> the 40-prompt Spanish corpus — 1024/1024 OK at every burst profile,
+> 600/600 OK under 5-minute sustained load, throughput plateau near
+> 4.3 rps (see
+> [`uttera-benchmarks` Run 6](https://github.com/uttera/uttera-benchmarks/tree/master/results/2026-04-17-run6-vllm-tts40w)).
+> Minor releases since have added OpenAI-compat polish (speed range + actual
+> application via ffmpeg atempo, cfg_value validation, HEAD /health,
+> opt-in CORS, HTTP 422 on malformed JSON, adhoc-cloning hardening) and
+> the canonical Uttera-stack port `9004`.
+> See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Positioning
 
@@ -57,24 +63,57 @@ A **single Python process** hosts:
   the MD5 audio cache, voice registry, and Redis self-registration
   protocol shared with the other Uttera repos.
 
-**What is here in v1.0.0**:
-- 6 standard OpenAI reference voices (alloy/echo/fable/onyx/nova/shimmer)
-  precomputed at startup.
-- Elite/custom voices via file-based registry (`voices.json` +
-  `assets/voices/elite/`), reloadable without a server restart.
-- **Adhoc voice cloning** via a `speaker_wav` file upload on
-  `/v1/audio/speech` — the one feature the Whisper-stack siblings don't
-  have.
-- MP3 / WAV / PCM / Opus / FLAC response formats.
-- Chunked streaming via `/v1/audio/speech/stream`.
-- On-disk MD5 audio cache identical to `uttera-tts-hotcold`, with
-  per-request opt-out for privacy-sensitive calls (see
-  [**Cache opt-out**](#cache-opt-out--per-request-privacy-control)).
+**What is here (current release)**:
 
-**What is *not* here** (yet — see [ROADMAP.md](ROADMAP.md)):
-- Dynamic voice registry (POST/DELETE `/v1/voices`) — scheduled for
-  a future v1.x minor.
-- In-repo benchmark harness in `tests/`. The canonical numbers live in
+*Voices and synthesis*
+- 6 standard OpenAI reference voices (alloy / echo / fable / onyx /
+  nova / shimmer) precomputed at startup.
+- Elite/custom voices via file-based registry (`voices.json` +
+  `assets/voices/elite/`), reloadable without a server restart via
+  `POST /admin/reload-voices`.
+- **Adhoc voice cloning** via a multipart `custom_voice_file` upload on
+  `/v1/audio/speech` — the one feature the Whisper-stack siblings don't
+  have. The legacy field name `speaker_wav` is accepted as an alias.
+- 5 response formats: MP3, WAV, PCM, Opus, FLAC.
+- Chunked streaming via `/v1/audio/speech/stream`.
+
+*Control plane*
+- **`speed` parameter is actually applied** (ffmpeg `atempo`, chained for
+  values <0.5 or >2.0). Validated range `[0.25, 4.0]` per the OpenAI
+  spec — out-of-range → HTTP 422.
+- **`cfg_value`** (VoxCPM2-specific sampling knob) validated range
+  `[0.5, 5.0]` — out-of-range → HTTP 422.
+- Malformed JSON or missing `input` → HTTP 422 with a useful error
+  body (not HTTP 500 with empty body).
+
+*Privacy and observability*
+- On-disk MD5 audio cache identical to `uttera-tts-hotcold`, with
+  **per-request opt-out** for privacy-sensitive calls — three equivalent
+  ways to request it (JSON body `cache:false`, multipart form field, or
+  the standard `Cache-Control: no-cache` header). See
+  [**Cache opt-out**](#cache-opt-out--per-request-privacy-control).
+- `X-Cache` response header — `HIT | MISS | BYPASS | ADHOC | DISABLED`
+  — so clients can verify the cache decision without timing heuristics.
+- `X-Route` response header — `HOT | CACHE | ADHOC`.
+
+*Operations*
+- `HEAD /health` accepted for uptime probes (in addition to `GET`).
+- Opt-in `CORSMiddleware` gated on the `CORS_ALLOW_ORIGINS` env var
+  (disabled by default — API-first deployments don't need it).
+- Canonical Uttera-stack port `9004` (TTS family; STT family uses
+  `9005`). The Gatekeeper routes by service family, so swapping
+  `hotcold ↔ vllm` is a backend change only.
+- Optional Redis self-registration for upstream router discovery
+  (same protocol as the sibling TTS and STT servers).
+
+**What is *not* here**:
+- Dynamic voice registry (`POST` / `DELETE /v1/voices`) — the current
+  registry is file-based (`voices.json` + disk layout). A dynamic
+  registry would be an additive minor if there is demand.
+- Adhoc voice cloning on the streaming endpoint — `/v1/audio/speech/stream`
+  uses registered voices only. Adhoc streaming would require latent
+  computation on the request's critical path before the first chunk.
+- In-repo benchmark harness. The canonical numbers live in
   [`uttera-benchmarks`](https://github.com/uttera/uttera-benchmarks).
 
 See [API.md](API.md) for endpoint details, [HISTORY.md](HISTORY.md) for

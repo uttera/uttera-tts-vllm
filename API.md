@@ -12,11 +12,11 @@ Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **m
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `input` | string (required) | — | Text to synthesise. UTF-8. |
+| `input` | string (required) | — | Text to synthesise. UTF-8. If missing or empty → HTTP 422 with the pydantic validation detail. |
 | `voice` | string | `alloy` | Name of a voice in `voices.json` (both `standard/` and `elite/`). |
-| `response_format` | string | `mp3` | `mp3`, `wav`, `pcm`, `opus`, `flac`. |
-| `speed` | float | `1.0` | Included in the cache key. |
-| `cfg_value` | float | `2.0` | VoxCPM2-specific tuning knob. |
+| `response_format` | string | `mp3` | One of `mp3`, `wav`, `pcm`, `opus`, `flac`. |
+| `speed` | float | `1.0` | Playback rate. Valid range `[0.25, 4.0]` (OpenAI spec) — out-of-range → HTTP 422. Applied post-synthesis via an `ffmpeg atempo` filter (chained for values `<0.5` or `>2.0`). Included in the cache key. |
+| `cfg_value` | float | `2.0` | VoxCPM2 diffusion guidance scale. Valid range `[0.5, 5.0]` — out-of-range → HTTP 422. Higher is more faithful to the voice prompt, lower is more creative. |
 | `cache` | bool | `null` | Per-request cache opt-out. `false` (or `0`) tells the server neither to read from nor write to the audio cache for this request — the response will be freshly synthesised and nothing about the request is persisted on disk afterwards. `true` is the explicit opt-in; `null`/omitted follows the server default (cache on whenever `CACHE_TTL_MINUTES > 0`). See **Cache opt-out** below. |
 | `model` | string | `tts-1` | Ignored; the model is fixed by `VOXCPM_MODEL` at startup. |
 
@@ -25,7 +25,7 @@ Generate audio from text. Accepts either a **JSON body** (OpenAI classic) or **m
 | Field | Type | Notes |
 |---|---|---|
 | `custom_voice_file` | file | **Canonical** name for the adhoc voice-cloning upload. When present, the voice is cloned from this audio file for this single request — the server does **not** persist the sample or any derived latents. Cache is bypassed. Accepts any libsndfile-readable format (wav, flac, mp3, ogg, m4a, …). |
-| `speaker_wav` | file | Legacy alias of `custom_voice_file`, kept for v1.0.0 compatibility and for clients coming from the Coqui ecosystem. Identical semantics. If both fields are present on the same request, `custom_voice_file` wins. |
+| `speaker_wav` | file | Legacy alias of `custom_voice_file`, kept for backward compatibility with pre-1.1 clients and for clients coming from the Coqui ecosystem. Identical semantics. If both fields are present on the same request, `custom_voice_file` wins. |
 
 ### Example — JSON body
 
@@ -108,7 +108,7 @@ The server's audio cache speeds up repeated requests by storing a synthesised fi
 
 ## `POST /v1/audio/speech/stream`
 
-Stream the audio as `audio/wav` chunks as soon as the engine emits them. No cache. Registered voices only (adhoc cloning on streaming will land in a later release — see `ROADMAP.md`).
+Stream the audio as `audio/wav` chunks as soon as the engine emits them. No cache. Registered voices only — adhoc cloning on streaming is not supported (computing latents on the request's critical path would defeat the first-chunk latency the streaming endpoint exists for).
 
 ```bash
 curl -N -X POST http://localhost:9004/v1/audio/speech/stream \
@@ -156,12 +156,15 @@ Use this after editing `voices.json` or dropping a new `.wav` into `assets/voice
 
 `id` is controlled by the `SERVED_MODEL_NAME` env var (default `tts-1`, matching OpenAI's public identifier so unmodified SDK clients work).
 
-## `GET /health`
+## `GET /health` and `HEAD /health`
+
+Both methods are accepted. `HEAD` returns the same headers as `GET` with
+an empty body — useful for uptime probes that don't want to parse JSON.
 
 ```json
 {
   "status": "ok",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "engine": "nano-vllm-voxcpm",
   "model": "openbmb/VoxCPM2",
   "served_as": "tts-1",
@@ -182,6 +185,23 @@ Use this after editing `voices.json` or dropping a new `.wav` into `assets/voice
 ```
 
 `routing` matches `uttera-tts-hotcold`'s `/health` so an upstream router can consume both backends with the same schema.
+
+## CORS
+
+Disabled by default — this server is API-first, typically consumed by
+backend-to-backend callers or served through the Uttera gatekeeper.
+
+To enable browser-origin access, set the `CORS_ALLOW_ORIGINS` env var
+to a comma-separated list of origins (or `*` for permissive):
+
+```bash
+CORS_ALLOW_ORIGINS="https://app.uttera.ai,https://dev.uttera.ai"
+# or:
+CORS_ALLOW_ORIGINS="*"
+```
+
+Methods, headers, and credentials follow the FastAPI `CORSMiddleware`
+defaults (allow all methods, allow all headers, credentials enabled).
 
 ## Authentication
 
