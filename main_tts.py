@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.4.0
+# Version: 1.4.1
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,12 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.4.1 (2026-04-21): setup.sh now prefers python3.11 (then 3.12,
+#   then falls back to system python3 with a warning). The upstream
+#   `nano-vllm-voxcpm` package declares `Requires-Python >=3.10,<3.13`,
+#   so installs on py3.13+ systems (e.g. Ubuntu 25.10) hit
+#   `No matching distribution found for nano-vllm-voxcpm>=2.0.0`. No
+#   runtime code changes — identical server behaviour.
 # - 1.4.0 (2026-04-21): Prometheus `/metrics` endpoint. Exposes
 #   request counters (by endpoint/method/status), request duration
 #   histograms, in-flight gauge, engine-ready gauge, TTS-specific

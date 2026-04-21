@@ -1,21 +1,34 @@
 #!/bin/bash
 # Uttera TTS vLLM — Unified Setup Script
 # Version: 0.1.0
-# Description: Creates a Python 3.12 venv, installs nano-vllm-voxcpm and the
-#              FastAPI stack, then hands over to setup_assets.sh for the
-#              model + standard voice provisioning.
+# Description: Creates a Python 3.11 venv (or 3.12 — nano-vllm-voxcpm
+#              requires <3.13), installs nano-vllm-voxcpm and the FastAPI
+#              stack, then hands over to setup_assets.sh for the model +
+#              standard voice provisioning.
 
 set -e
 
 echo "🦾 J.A.R.V.I.S. - Starting Uttera TTS vLLM installation..."
 
 echo "[*] Initialising Python Virtual Environment..."
-if command -v python3.12 &>/dev/null; then
+# nano-vllm-voxcpm on PyPI declares Requires-Python >=3.10,<3.13, so we
+# prefer 3.11 (widely-available, well-tested), then 3.12, then fall back
+# to the system python3 with a warning — on 3.13+ the install will fail
+# at the nano-vllm-voxcpm resolution step.
+if command -v python3.11 &>/dev/null; then
+    PYTHON_BIN=python3.11
+    echo "    -> Using python3.11"
+elif command -v python3.12 &>/dev/null; then
     PYTHON_BIN=python3.12
     echo "    -> Using python3.12"
 else
     PYTHON_BIN=python3
-    echo "    [!] python3.12 not found, falling back to $(python3 --version)"
+    PY_VER=$(python3 --version)
+    echo "    [!] Neither python3.11 nor python3.12 found, falling back to ${PY_VER}"
+    case "${PY_VER}" in
+        *" 3.13"*|*" 3.14"*)
+            echo "    [!!] ${PY_VER} is >=3.13 — nano-vllm-voxcpm will refuse to install (its Requires-Python is <3.13). Install python3.11 (e.g. via pyenv) and re-run." ;;
+    esac
 fi
 $PYTHON_BIN -m venv venv
 source venv/bin/activate
