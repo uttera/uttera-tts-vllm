@@ -11,7 +11,7 @@
 # See LICENSE and NOTICE for full terms and attributions.
 #
 # Package: uttera-tts-vllm
-# Version: 1.4.2
+# Version: 1.4.3
 # Maintainer: J.A.R.V.I.S. A.I., Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
@@ -19,6 +19,26 @@
 #              no hot/cold pool, no per-request worker spawning.
 #
 # CHANGELOG:
+# - 1.4.3 (2026-04-23): VRAM-usage fix — VLLM_GPU_MEM_UTIL default
+#   0.85 → 0.45, zero throughput regression. Previously the 0.85 default
+#   on a 32 GB RTX 5090 preallocated ~27.8 GB of VRAM because the engine
+#   sizes the KV cache block pool as
+#   `num_kvcache_blocks = (total × util - peak) / per_block_size` — it
+#   consumes the WHOLE available budget regardless of whether
+#   `max_num_seqs × max_model_len` would actually need it. Empirical
+#   sweep on sphinx (RTX 5090) with the canonical `uttera-tts-40w`
+#   benchmark corpus (2026-04-23):
+#
+#       util    VRAM    burst-64 wall/rps           burst-256 wall/rps
+#       ────    ─────   ────────────────────        ──────────────────
+#       0.30    fail    `num_kvcache_blocks>0` assertion on startup
+#       0.40    22.0 GB 20.1 s / 3.19 rps           60.9 s / 4.20 rps
+#   →   0.45    23.6 GB 20.6 s / 3.11 rps           59.1 s / 4.33 rps   ← new default
+#       0.85    27.8 GB 20.8 s / 3.08 rps (baseln)  64.4 s / 3.98 rps
+#
+#   0.45 preserves throughput (inside variance of baseline 0.85) while
+#   freeing ~4.2 GB for other GPU tenants (uttera-stt-hotcold,
+#   uttera-sentiment-vllm, comfyui, ...). No API change.
 # - 1.4.2 (2026-04-21): setup.sh now pins torch/torchaudio to 2.8.x and
 #   pre-installs the official flash-attn 2.8.3 release wheel matching the
 #   resolved torch / python / CXX11-ABI combo. Previously the resolver
@@ -210,7 +230,7 @@ from huggingface_hub import snapshot_download  # noqa: E402
 # 1. Global Config & Logging
 # -------------------------------
 
-SERVER_VERSION = "1.4.2"
+SERVER_VERSION = "1.4.3"
 
 # Validation ranges.
 # `speed` — OpenAI spec for /v1/audio/speech is [0.25, 4.0].
@@ -237,7 +257,7 @@ ASSETS_DIR.mkdir(exist_ok=True)
 # Model + engine.
 VOXCPM_MODEL = os.environ.get("VOXCPM_MODEL", "openbmb/VoxCPM2")
 SERVED_MODEL_NAME = os.environ.get("SERVED_MODEL_NAME", "tts-1")
-VLLM_GPU_MEM_UTIL = float(os.environ.get("VLLM_GPU_MEM_UTIL", "0.85"))
+VLLM_GPU_MEM_UTIL = float(os.environ.get("VLLM_GPU_MEM_UTIL", "0.45"))
 VLLM_MAX_NUM_SEQS = int(os.environ.get("VLLM_MAX_NUM_SEQS", "32"))
 VLLM_MAX_NUM_BATCHED_TOKENS = int(os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS", "16384"))
 VLLM_MAX_MODEL_LEN = int(os.environ.get("VLLM_MAX_MODEL_LEN", "4096"))

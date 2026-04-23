@@ -5,6 +5,59 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-04-23
+
+### Changed
+
+- **`VLLM_GPU_MEM_UTIL` default lowered from `0.85` → `0.45`**, freeing
+  ~4.2 GB of VRAM for co-resident GPU tenants (uttera-stt-hotcold,
+  uttera-sentiment-vllm, comfyui, in-flight F5 / Kokoro smokes...)
+  with **zero throughput regression**. The engine sizes the KV cache
+  block pool as `num_kvcache_blocks = (total_gpu_memory × util - peak)
+  / per_block_size` — i.e. it consumes the WHOLE available budget
+  regardless of whether `max_num_seqs × max_model_len` needs that
+  much. Empirical burst-64 / burst-256 sweep on sphinx (RTX 5090)
+  with the canonical `uttera-tts-40w` benchmark corpus proved
+  throughput is flat across 0.40 / 0.45 / 0.85 while VRAM scales
+  linearly.
+
+  Benchmark (2026-04-23, canonical uttera-tts-40w corpus, HOT-only
+  inference paths, cache wiped before each run):
+
+  | util | VRAM     | burst-64 wall | burst-64 rps | burst-256 wall | burst-256 rps |
+  |------|----------|---------------|--------------|----------------|---------------|
+  | 0.30 | fail     | — (assertion) | —            | —              | —             |
+  | 0.40 | 22.0 GB  | 20.1 s        | 3.19         | 60.9 s         | 4.20          |
+  | 0.45 | 23.6 GB  | 20.6 s        | 3.11         | 59.1 s         | 4.33          |
+  | 0.85 | 27.8 GB  | 20.8 s        | 3.08 (base)  | 64.4 s         | 3.98 (base)   |
+
+  0.45 is chosen over 0.40 because it leaves ~1 GB of headroom above
+  the startup assertion floor (which can move up / down depending on
+  model HF-cache state and other GPU tenants at boot time).
+
+- **`.env.example` rewritten** with the measured table above, a
+  per-GPU-class starting-point matrix, and explicit documentation of
+  `engine/model_runner.py:230`'s `available_budget` formula.
+
+### Production rollout
+
+- Applied to `sphinx.espuny.net` 2026-04-23 via `.env` update +
+  `systemctl restart uttera-tts-vllm`. Post-change: tts-vllm process
+  23.6 GB VRAM (down from 27.8 GB), burst-64 rps 3.11, burst-256 rps
+  4.33 (100 % ok in both), functional parity with v1.4.2.
+
+### Notes — what did NOT work
+
+- A `VLLM_ENFORCE_EAGER` env var was prototyped during investigation
+  to disable CUDA-graph capture (whose buffers are allocated outside
+  the `available_budget` accounting and expand into whatever free
+  VRAM remains). Measured impact: ~4 GB VRAM savings at the cost of
+  2-3× throughput regression (rps 3.08 → 0.96 at util=0.35 +
+  enforce_eager=true). Not a good trade for a production TTS
+  service. The knob was removed before landing. Future 16-GB
+  deployments should reduce `max_num_seqs` instead (caps the number
+  of CUDA graph sizes captured).
+
 ## [1.4.2] - 2026-04-21
 
 ### Changed
