@@ -12,7 +12,7 @@
 #
 # Package: uttera-tts-vllm
 # Version: 1.5.0
-# Maintainer: Uttera, Hugo L. Espuny
+# Maintainer: Hugo L. Espuny
 # Description: High-throughput VoxCPM2 TTS server. A single Python process
 #              hosts nano-vllm-voxcpm's AsyncVoxCPM2ServerPool; concurrency
 #              is handled by the engine's internal continuous batching —
