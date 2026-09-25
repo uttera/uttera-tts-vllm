@@ -743,13 +743,19 @@ def _probe_wav(seconds: float = 1.0, hz: int = 440, sr: int = 16000) -> bytes:
     """A mono 16 kHz WAV holding a tone. A tone and not silence: pure silence
     can make voice-expecting models fail, and a failing probe would leave the
     circuit open forever."""
-    import math, struct as _struct, wave as _w, io as _bio
+    import math
+    import struct as _struct
+    import wave as _w
+    import io as _bio
     n = int(seconds * sr)
     samples = b"".join(_struct.pack("<h", int(12000 * math.sin(2 * math.pi * hz * i / sr)))
                        for i in range(n))
     buf = _bio.BytesIO()
     with _w.open(buf, "wb") as f:
-        f.setnchannels(1); f.setsampwidth(2); f.setframerate(sr); f.writeframes(samples)
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(sr)
+        f.writeframes(samples)
     return buf.getvalue()
 
 
@@ -879,9 +885,6 @@ app = FastAPI(
 #   · truncated JSON body            -> 400 (was 500)
 #   · text above max_model_len       -> 413 (was 500)
 #   · GPU out of memory on a busy node -> 503 (busy, not broken; was 500)
-import json as _json_err
-from fastapi.responses import JSONResponse as _RespErr
-
 _SIGNS_TOO_LONG = ("max_model_len", "prompt_len", "context length", "too long",
                    "maximum context", "exceeds", "excede")
 _SIGNS_OOM = ("out of memory", "outofmemoryerror", "cuda error: out of memory",
@@ -915,21 +918,21 @@ def _classify_error(exc):
 
 
 def _install_error_handlers(app):
-    @app.exception_handler(_json_err.JSONDecodeError)
+    @app.exception_handler(json.JSONDecodeError)
     async def _err_json(request, exc):
-        return _RespErr(status_code=400,
+        return JSONResponse(status_code=400,
                         content={"detail": "malformed JSON body: %s" % exc})
 
     async def _err_generic(request, exc):
         code, detail = _classify_error(exc)
         if code == 503:
-            return _RespErr(status_code=503, headers={"Retry-After": "30"},
+            return JSONResponse(status_code=503, headers={"Retry-After": "30"},
                             content={"detail": detail})
         if code:
-            return _RespErr(status_code=code, content={"detail": detail})
+            return JSONResponse(status_code=code, content={"detail": detail})
         # Anything we cannot classify STAYS a 500: we don't disguise a possible
         # server fault as the client's mistake.
-        return _RespErr(status_code=500,
+        return JSONResponse(status_code=500,
                         content={"detail": "%s: %s" % (type(exc).__name__, str(exc)[:300])})
 
     app.add_exception_handler(ValueError, _err_generic)
@@ -1335,7 +1338,8 @@ def _content_digest(hex_sha: str) -> str:
     is understood by any modern HTTP library without reading our docs, while the
     hex `X-Audio-SHA256` is what you read at a glance in a log or a console.
     """
-    import base64, binascii
+    import base64
+    import binascii
     try:
         return "sha-256=:%s:" % base64.b64encode(binascii.unhexlify(hex_sha)).decode()
     except Exception:
