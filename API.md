@@ -164,7 +164,7 @@ an empty body — useful for uptime probes that don't want to parse JSON.
 ```json
 {
   "status": "ok",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "engine": "nano-vllm-voxcpm",
   "model": "openbmb/VoxCPM2",
   "served_as": "tts-1",
@@ -179,17 +179,17 @@ an empty body — useful for uptime probes that don't want to parse JSON.
     "total_errors": 0,
     "max_num_seqs": 32,
     "max_model_len": 4096,
-    "gpu_memory_utilization": 0.85
+    "gpu_memory_utilization": 0.45
   }
 }
 ```
 
-`routing` matches `uttera-tts-hotcold`'s `/health` so an upstream router can consume both backends with the same schema.
+`routing` matches `uttera-tts-hotcold`'s `/health` so an upstream load balancer can consume both backends with the same schema. `engine_error` is non-null and the endpoint returns HTTP 503 while the circuit breaker is open.
 
 ## CORS
 
 Disabled by default — this server is API-first, typically consumed by
-backend-to-backend callers or served through the Uttera gatekeeper.
+backend-to-backend callers or served through a reverse proxy.
 
 To enable browser-origin access, set the `CORS_ALLOW_ORIGINS` env var
 to a comma-separated list of origins (or `*` for permissive):
@@ -205,4 +205,4 @@ defaults (allow all methods, allow all headers, credentials enabled).
 
 ## Authentication
 
-No authentication in this repo by design. Deploy behind the Uttera gatekeeper (or any reverse proxy) for API keys, quotas, and rate limits.
+No authentication in this repo by design. Deploy behind a reverse proxy or API gateway for API keys, quotas, and rate limits.

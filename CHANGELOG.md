@@ -5,24 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-24
+
+Engine-hardening sweep. All additive except the two `Changed` defaults
+below. The server is now standalone — put any load balancing in front of it.
+
+### Added
+
+- **Engine circuit breaker.** `ENGINE_FAIL_THRESHOLD` (default 3)
+  consecutive ENGINE (5xx) failures mark the node not-ready, so `/health`
+  reports 503 instead of serving from a dead engine. 4xx (the caller's
+  fault) never trip it. A later success closes it.
+- **Recovery self-probe.** While the breaker is open, a background task
+  issues a tiny in-process synthesis every `ENGINE_PROBE_SECONDS`
+  (default 30) so a transient failure self-heals without a manual restart.
+  Zero cost while the engine is healthy.
+- **Correct HTTP status codes.** Oversized text → 413, GPU out-of-memory
+  → 503 (busy, not broken — and it does not trip the breaker), malformed
+  JSON body → 400. Previously all three surfaced as 500. Tracebacks are
+  stripped from error bodies.
+- **Voice preload + lazy load + LRU cap.** Only `VOICE_PRELOAD` voices are
+  resident at startup; the rest are computed on first use and capped at
+  `VOICE_CACHE_MAX` (latents live outside the vLLM VRAM budget, ~0.5 GB
+  each). `torch.cuda.empty_cache()` is called on eviction.
+- **Reference-sample trimming.** An uploaded cloning sample longer than
+  `REF_MAX_SECONDS` (default 20 s) is trimmed — leading silence removed
+  first — so a very long recording can't OOM the node. Best-effort.
+- **Text normalization before synthesis.** Line breaks (which make VoxCPM2
+  babble) become a comma/space, and a terminating period is appended when
+  missing (text ending mid-sentence makes the model loop).
+- **Audio-cache sweep.** A background task (`CACHE_SWEEP_SECONDS`, default
+  300) deletes expired files from disk, so `CACHE_TTL_MINUTES` is a real
+  retention bound, not just a read gate.
+- **Response integrity headers.** `X-Audio-Duration` and the SHA-256 of
+  the exact bytes served, as both `X-Audio-SHA256` (hex) and
+  `Content-Digest: sha-256=:…:` (RFC 9530).
+- **Optional offline mode.** `UTTERA_OFFLINE=1` forces transformers /
+  huggingface_hub / modelscope to use only the local cache. OFF by default.
+
+### Changed
+
+- **Cache key MD5 → SHA-256.** It is only a filename, never a secret, but
+  SHA-256 costs the same and is one less audit note.
+- **`CACHE_TTL_MINUTES` default `10080` (7 days) → `60` (1 hour).**
+  Synthesized audio may contain personal data; a short retention is the
+  privacy-friendly default. Set `CACHE_TTL_MINUTES` to restore any value.
+
+### Removed
+
+- The optional Redis self-registration loop and its env vars. The server
+  is standalone; use a reverse proxy or load balancer for discovery.
+
 ## [1.4.3] - 2026-04-23
 
 ### Changed
 
 - **`VLLM_GPU_MEM_UTIL` default lowered from `0.85` → `0.45`**, freeing
-  ~4.2 GB of VRAM for co-resident GPU tenants (uttera-stt-hotcold,
-  uttera-sentiment-vllm, comfyui, in-flight F5 / Kokoro smokes...)
-  with **zero throughput regression**. The engine sizes the KV cache
-  block pool as `num_kvcache_blocks = (total_gpu_memory × util - peak)
-  / per_block_size` — i.e. it consumes the WHOLE available budget
-  regardless of whether `max_num_seqs × max_model_len` needs that
-  much. Empirical burst-64 / burst-256 sweep on sphinx (RTX 5090)
-  with the canonical `uttera-tts-40w` benchmark corpus proved
-  throughput is flat across 0.40 / 0.45 / 0.85 while VRAM scales
-  linearly.
+  ~4.2 GB of VRAM for co-resident GPU tenants with **zero throughput
+  regression**. The engine sizes the KV cache block pool as
+  `num_kvcache_blocks = (total_gpu_memory × util - peak) / per_block_size`
+  — i.e. it consumes the WHOLE available budget regardless of whether
+  `max_num_seqs × max_model_len` needs that much. An empirical
+  burst-64 / burst-256 sweep on an RTX 5090 with a 40-prompt benchmark
+  corpus proved throughput is flat across 0.40 / 0.45 / 0.85 while VRAM
+  scales linearly.
 
-  Benchmark (2026-04-23, canonical uttera-tts-40w corpus, HOT-only
-  inference paths, cache wiped before each run):
+  Benchmark (RTX 5090, 40-prompt corpus, HOT-only inference paths, cache
+  wiped before each run):
 
   | util | VRAM     | burst-64 wall | burst-64 rps | burst-256 wall | burst-256 rps |
   |------|----------|---------------|--------------|----------------|---------------|
@@ -38,13 +87,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`.env.example` rewritten** with the measured table above, a
   per-GPU-class starting-point matrix, and explicit documentation of
   `engine/model_runner.py:230`'s `available_budget` formula.
-
-### Production rollout
-
-- Applied to `sphinx.espuny.net` 2026-04-23 via `.env` update +
-  `systemctl restart uttera-tts-vllm`. Post-change: tts-vllm process
-  23.6 GB VRAM (down from 27.8 GB), burst-64 rps 3.11, burst-256 rps
-  4.33 (100 % ok in both), functional parity with v1.4.2.
 
 ### Notes — what did NOT work
 
@@ -184,8 +226,8 @@ endpoints unchanged.
 
 - **Default port migrated from `5100` → `9004`** in lockstep with
   the sibling `uttera-tts-hotcold` v2.3.0. Canonical Uttera-stack
-  scheme: TTS services on `9004`, STT services on `9005`. The
-  Gatekeeper and clients route by service family; swapping
+  scheme: TTS services on `9004`, STT services on `9005`. A reverse
+  proxy and clients route by service family; swapping
   hotcold ↔ vllm is a backend change, not a port change.
 
   **Why not keep `5100`:** pairing TTS=5100 with STT=9005 (STT had
@@ -203,7 +245,7 @@ endpoints unchanged.
 
 Deployments with explicit `PORT` env var: no change required.
 Deployments on the old default (`:5100`):
-- Repoint your Gatekeeper / reverse proxy at `:9004`.
+- Repoint your reverse proxy at `:9004`.
 - Or set `PORT=5100` in your env to preserve the old endpoint.
 - Docker users: update your `-p` flag or `docker-compose.yml`.
 
@@ -422,10 +464,8 @@ still change before v1.0.0.
   request. No persistence. Cache is bypassed.
 - **Audio cache** with identical semantics to uttera-tts-hotcold:
   `AUDIO_CACHE_DIR` + `CACHE_TTL_MINUTES`. Set TTL to 0 to disable.
-- **Optional Redis self-registration** (parity with every other Uttera
-  repo). When `REDIS_URL` is set, publishes `{load_score,
-  accepts_requests, host, port, version, engine="nano-vllm-voxcpm",
-  model, ts}` to `tts:nodes:{NODE_ID}`.
+- **Optional self-registration hook** for an external router (removed in
+  1.5.0; the server is now standalone).
 - **Engine tuning env vars**: `VLLM_GPU_MEM_UTIL`,
   `VLLM_MAX_NUM_SEQS`, `VLLM_MAX_NUM_BATCHED_TOKENS`,
   `VLLM_MAX_MODEL_LEN`, `VOXCPM_INFERENCE_TIMESTEPS`. Defaults tuned

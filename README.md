@@ -11,18 +11,19 @@ High-throughput **Text-to-Speech** server built on
 continuous-batching engine. VoxCPM2 today, OpenAI-compatible API,
 adhoc voice cloning on day one.
 
-> **Status**: v1.3.0 — stable. The API surface (endpoints, cache opt-out
+> **Status**: v1.5.0 — stable. The API surface (endpoints, cache opt-out
 > semantics, `X-Cache` header values, canonical port `9004`) is frozen
 > under SemVer; no breaking changes inside `1.x`. The v1.0.0 baseline
 > was validated end-to-end on NVIDIA RTX 5090 (Blackwell, 32 GB) against
-> the 40-prompt Spanish corpus — 1024/1024 OK at every burst profile,
+> a 40-prompt Spanish corpus — 1024/1024 OK at every burst profile,
 > 600/600 OK under 5-minute sustained load, throughput plateau near
-> 4.3 rps (see
-> [`uttera-benchmarks` Run 6](https://github.com/uttera/uttera-benchmarks/tree/master/results/2026-04-17-run6-vllm-tts40w)).
-> Minor releases since have added OpenAI-compat polish (speed range + actual
-> application via ffmpeg atempo, cfg_value validation, HEAD /health,
-> opt-in CORS, HTTP 422 on malformed JSON, adhoc-cloning hardening) and
-> the canonical Uttera-stack port `9004`.
+> 4.3 rps. v1.5.0 adds an engine-hardening sweep: a circuit breaker + an
+> in-process recovery self-probe, correct HTTP status codes (413 / 503 /
+> 400 instead of a blanket 500), voice preload + lazy load + LRU cap,
+> reference-sample trimming, text normalization for VoxCPM2, an on-disk
+> cache sweep, response integrity headers (`Content-Digest`, RFC 9530),
+> and an optional offline mode. The server is standalone — put any load
+> balancing in front of it.
 > See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 ## Positioning
@@ -60,8 +61,7 @@ A **single Python process** hosts:
 - A thin FastAPI layer (`main_tts.py`) that exposes the endpoints
   Uttera expects — `/v1/audio/speech`, `/v1/audio/speech/stream`,
   `/v1/voices`, `/admin/reload-voices`, `/v1/models`, `/health` — plus
-  the MD5 audio cache, voice registry, and Redis self-registration
-  protocol shared with the other Uttera repos.
+  the SHA-256 audio cache and file-based voice registry.
 
 **What is here (current release)**:
 
@@ -83,28 +83,42 @@ A **single Python process** hosts:
   spec — out-of-range → HTTP 422.
 - **`cfg_value`** (VoxCPM2-specific sampling knob) validated range
   `[0.5, 5.0]` — out-of-range → HTTP 422.
-- Malformed JSON or missing `input` → HTTP 422 with a useful error
-  body (not HTTP 500 with empty body).
+- **Correct HTTP status codes.** Oversized text → 413, GPU out-of-memory
+  → 503 (busy, not broken), malformed JSON body → 400. Tracebacks are
+  stripped from error bodies. Only genuine 5xx trip the circuit breaker.
+- **Engine circuit breaker + recovery self-probe.** Repeated engine
+  (5xx) failures mark the node not-ready (`/health` 503); an in-process
+  probe self-heals it when the engine recovers, no restart needed. 4xx
+  (the caller's fault) never trip it.
 
 *Privacy and observability*
-- On-disk MD5 audio cache identical to `uttera-tts-hotcold`, with
-  **per-request opt-out** for privacy-sensitive calls — three equivalent
-  ways to request it (JSON body `cache:false`, multipart form field, or
-  the standard `Cache-Control: no-cache` header). See
+- On-disk SHA-256 audio cache with **per-request opt-out** for
+  privacy-sensitive calls — three equivalent ways to request it (JSON
+  body `cache:false`, multipart form field, or the standard
+  `Cache-Control: no-cache` header). See
   [**Cache opt-out**](#cache-opt-out--per-request-privacy-control).
+  A background sweep deletes expired files from disk so `CACHE_TTL_MINUTES`
+  is a real retention bound, not just a read gate.
 - `X-Cache` response header — `HIT | MISS | BYPASS | ADHOC | DISABLED`
   — so clients can verify the cache decision without timing heuristics.
 - `X-Route` response header — `HOT | CACHE | ADHOC`.
+- Response integrity headers — `X-Audio-Duration`, and the SHA-256 of the
+  exact bytes served as both `X-Audio-SHA256` (hex) and `Content-Digest`
+  (RFC 9530).
 
 *Operations*
+- **Standalone** — no service discovery or external coordination. Put any
+  load balancing in front of it.
+- Voice **preload + lazy load + LRU cap** so a large voice catalogue can't
+  starve the GPU (latents live outside the vLLM VRAM budget).
+- **Optional offline mode** (`UTTERA_OFFLINE=1`) — a validated model won't
+  silently re-fetch from the Hub on restart.
 - `HEAD /health` accepted for uptime probes (in addition to `GET`).
 - Opt-in `CORSMiddleware` gated on the `CORS_ALLOW_ORIGINS` env var
   (disabled by default — API-first deployments don't need it).
 - Canonical Uttera-stack port `9004` (TTS family; STT family uses
-  `9005`). The Gatekeeper routes by service family, so swapping
+  `9005`). A reverse proxy can route by service family, so swapping
   `hotcold ↔ vllm` is a backend change only.
-- Optional Redis self-registration for upstream router discovery
-  (same protocol as the sibling TTS and STT servers).
 
 **What is *not* here**:
 - Dynamic voice registry (`POST` / `DELETE /v1/voices`) — the current
@@ -185,14 +199,18 @@ full surface. The most common overrides:
 | `VOXCPM_MODEL` | `openbmb/VoxCPM2` | HF repo of the model. |
 | `SERVED_MODEL_NAME` | `tts-1` | Advertised via `/v1/models`. |
 | `DEFAULT_VOICE` | `alloy` | Fallback when client omits `voice`. |
-| `VLLM_GPU_MEM_UTIL` | `0.85` | Fraction of VRAM the engine is allowed to claim. |
+| `VLLM_GPU_MEM_UTIL` | `0.45` | Fraction of VRAM the engine is allowed to claim. |
 | `VLLM_MAX_NUM_SEQS` | `32` | Maximum in-flight sequences. |
 | `VLLM_MAX_NUM_BATCHED_TOKENS` | `16384` | Batching budget per decoder step. |
 | `VOXCPM_INFERENCE_TIMESTEPS` | `10` | VoxCPM2-specific denoising steps. |
-| `AUDIO_CACHE_DIR` | `assets/cache` | MD5 audio cache location. |
-| `CACHE_TTL_MINUTES` | `10080` (7 days) | 0 to disable. |
+| `VOICE_PRELOAD` | `alloy` | Voices resident at startup (comma-separated); the rest load lazily. |
+| `VOICE_CACHE_MAX` | `4` | LRU cap on lazily-loaded voice latents. |
+| `AUDIO_CACHE_DIR` | `assets/cache` | SHA-256 audio cache location. |
+| `CACHE_TTL_MINUTES` | `60` (1 hour) | 0 to disable. |
+| `REF_MAX_SECONDS` | `20` | Cap on the adhoc-cloning reference sample. |
+| `ENGINE_FAIL_THRESHOLD` | `3` | Consecutive 5xx that open the circuit breaker. |
+| `UTTERA_OFFLINE` | `0` | `1` forces local-cache-only model loading. |
 | `PORT` | `9004` | HTTP port. |
-| `REDIS_URL` | _(empty)_ | Optional; enables self-registration for a router. |
 
 ## Observability (`/metrics`)
 
@@ -216,7 +234,7 @@ Key series:
 | `uttera_tts_request_duration_seconds{endpoint,method}` | Histogram | HTTP p50/p95/p99 (total RTT) |
 | `uttera_tts_inflight_requests` | Gauge | Live load |
 | `uttera_tts_synthesis_total{response_format,route,cache}` | Counter | Traffic mix across format × lane × cache decision (same semantics as `X-Route`/`X-Cache` headers) |
-| `uttera_tts_characters_synthesised_total{response_format}` | Counter | Input chars synthesised — billing / throughput proxy. Cache hits don't re-bill |
+| `uttera_tts_characters_synthesised_total{response_format}` | Counter | Input chars synthesised — throughput proxy. Cache hits are not re-counted |
 | `uttera_tts_inference_duration_seconds{op}` | Histogram | Per-call latency, `op` in `{synthesis, ffmpeg_encode}` — separates GPU time from CPU-encoder time |
 | `uttera_tts_voices_loaded` | Gauge | Count of voices resident in VRAM |
 | `uttera_tts_engine_ready` | Gauge | 1 once engine is warmed up |
